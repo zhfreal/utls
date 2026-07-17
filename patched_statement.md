@@ -26,3 +26,12 @@ This patch brings `utls` into full security parity with upstream Xray-core `v26.
    - Refactored these structures into expressionless `switch` blocks (e.g., `switch { default:` and `switch { case peerPub != nil:`). This preserves the identical control flow while eliminating the loop-related warnings.
 2. **Redundant Return Statements (`u_alias.go`)**:
    - Fixed static analysis warnings (rule S1023) by removing redundant `return` statements from the empty functions `AddEcdheKeypair` and `AddKemKeypair`.
+
+---
+
+## Testing Coverage
+
+Added `reality_test.go` to provide unit testing coverage for the internal server-side functions:
+1. **`TestRealityValue`**: Verifies the bit-shifting logic used for version parsing (`min-client-ver`).
+2. **`TestRealityMldsa65CertSize`**: Validates that `realityServerCertMldsa65` allocates sufficient byte capacity for the ML-DSA-65 signature.
+3. **`TestRealitySignMldsa65`**: Verifies cryptographic signing functionality on the server certificate offset `126` using the `mldsa65` signature generation.
