@@ -23,7 +23,6 @@ type KeySharesParameters struct{}
 func NewKeySharesParameters() *KeySharesParameters { return &KeySharesParameters{} }
 
 func (*KeySharesParameters) AddEcdheKeypair(curveID CurveID, ecdheKey *ecdh.PrivateKey, ecdhePubKey *ecdh.PublicKey) {
-	return
 }
 
 func (*KeySharesParameters) GetEcdheKey(curveID CurveID) (ecdheKey *ecdh.PrivateKey, ok bool) { return }
@@ -31,7 +30,6 @@ func (*KeySharesParameters) GetEcdheKey(curveID CurveID) (ecdheKey *ecdh.Private
 func (*KeySharesParameters) GetEcdhePubkey(curveID CurveID) (params *ecdh.PublicKey, ok bool) { return }
 
 func (*KeySharesParameters) AddKemKeypair(curveID CurveID, kemKey any, kemPubKey any) {
-	return
 }
 
 func (ksp *KeySharesParameters) GetKemKey(curveID CurveID) (kemKey any, ok bool) { return }

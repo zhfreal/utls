@@ -16,3 +16,13 @@ This branch (`patch-reality-v26`) contains backported security features from Xra
 This patch brings `utls` into full security parity with upstream Xray-core `v26.7.11`, protecting against harvest-now-decrypt-later MITM attacks via hybrid key exchange and post-quantum certificate signatures.
 
 *Authored for the mihomo-mine v26 migration.*
+
+---
+
+## Code Quality & Static Analysis Fixes
+
+1. **Unconditionally Terminated Loops (`reality.go`)**:
+   - Fixed static analysis warnings (rule SA4004) where single-iteration `for` loops were used as simple blocks to allow early exits via `break`. 
+   - Refactored these structures into expressionless `switch` blocks (e.g., `switch { default:` and `switch { case peerPub != nil:`). This preserves the identical control flow while eliminating the loop-related warnings.
+2. **Redundant Return Statements (`u_alias.go`)**:
+   - Fixed static analysis warnings (rule S1023) by removing redundant `return` statements from the empty functions `AddEcdheKeypair` and `AddKemKeypair`.

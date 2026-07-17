@@ -219,6 +219,10 @@ func parseTestData(r io.Reader) (flows [][]byte, err error) {
 		}
 	}
 
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+
 	if len(currentFlow) > 0 {
 		flows = append(flows, currentFlow)
 	}

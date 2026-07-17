@@ -400,7 +400,8 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 	waitGroup.Add(2)
 
 	go func() {
-		for {
+		switch {
+		default:
 			mutex.Lock()
 			hs.clientHello, _, err = hs.c.readClientHello(context.Background()) // TODO: Change some rules in this function.
 			if copying || err != nil || hs.c.vers != VersionTLS13 || !config.ServerNames[hs.clientHello.serverName] {
@@ -421,7 +422,8 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 					}
 				}
 			}
-			for peerPub != nil {
+			switch {
+			case peerPub != nil:
 				if hs.AuthKey, err = curve25519.X25519(config.PrivateKey, peerPub); err != nil {
 					break
 				}
@@ -455,12 +457,10 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 					(config.ShortIds[hs.ClientShortId]) {
 					hs.c.conn = conn
 				}
-				break
 			}
 			if config.Log != nil {
 				config.Log("REALITY remoteAddr: %v hs.c.conn == conn: %v", remoteAddr, hs.c.conn == conn)
 			}
-			break
 		}
 		mutex.Unlock()
 		if hs.c.conn != conn {
