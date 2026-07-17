@@ -35,3 +35,8 @@ Added `reality_test.go` to provide unit testing coverage for the internal server
 1. **`TestRealityValue`**: Verifies the bit-shifting logic used for version parsing (`min-client-ver`).
 2. **`TestRealityMldsa65CertSize`**: Validates that `realityServerCertMldsa65` allocates sufficient byte capacity for the ML-DSA-65 signature.
 3. **`TestRealitySignMldsa65`**: Verifies cryptographic signing functionality on the server certificate offset `126` using the `mldsa65` signature generation.
+
+---
+
+## Continuous Integration (CI)
+*   **Note**: The automated GitHub Actions workflow (`.github/workflows/go.yml`) has been temporarily disabled (renamed to `.yml.disabled`) to conserve GitHub compute quota on forked repositories.
