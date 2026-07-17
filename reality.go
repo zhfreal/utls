@@ -111,6 +111,9 @@ type RealityConfig struct {
 
 	LimitFallbackUpload   RealityLimitFallback
 	LimitFallbackDownload RealityLimitFallback
+	Mldsa65Verify         []byte
+	Mldsa65Key            []byte
+	MasterKeyLog          func(format string, v ...any)
 
 	Config
 }
@@ -130,6 +133,9 @@ func (a *RealityConfig) Clone() *RealityConfig {
 		ShortIds:              a.ShortIds,
 		LimitFallbackUpload:   a.LimitFallbackUpload,
 		LimitFallbackDownload: a.LimitFallbackDownload,
+		Mldsa65Verify:         a.Mldsa65Verify,
+		Mldsa65Key:            a.Mldsa65Key,
+		MasterKeyLog:          a.MasterKeyLog,
 		Config:                *a.Config.Clone(),
 	}
 }
