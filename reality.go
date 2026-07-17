@@ -15,6 +15,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/cloudflare/circl/sign/mldsa/mldsa65"
 	"io"
 	"math/big"
 	"net"
@@ -113,7 +114,6 @@ type RealityConfig struct {
 	LimitFallbackDownload RealityLimitFallback
 	Mldsa65Verify         []byte
 	Mldsa65Key            []byte
-	MasterKeyLog          func(format string, v ...any)
 
 	Config
 }
@@ -135,7 +135,6 @@ func (a *RealityConfig) Clone() *RealityConfig {
 		LimitFallbackDownload: a.LimitFallbackDownload,
 		Mldsa65Verify:         a.Mldsa65Verify,
 		Mldsa65Key:            a.Mldsa65Key,
-		MasterKeyLog:          a.MasterKeyLog,
 		Config:                *a.Config.Clone(),
 	}
 }
@@ -210,6 +209,8 @@ var realityServerCert = onceValues(func() (ed25519Priv ed25519.PrivateKey, signe
 	return
 })
 
+
+
 type realityServerHandshakeStateTLS13 struct {
 	serverHandshakeStateTLS13
 
@@ -275,12 +276,26 @@ func (hs *realityServerHandshakeStateTLS13) handshake() error {
 		}
 	*/
 	{
-		ed25519Priv, signedCert := realityServerCert()
-		signedCert = append([]byte{}, signedCert...)
+		var ed25519Priv ed25519.PrivateKey
+		var signedCert []byte
+		if len(config.Mldsa65Key) > 0 {
+			ed25519Priv, signedCert = realityServerCertMldsa65()
+			signedCert = append([]byte{}, signedCert...)
+		} else {
+			ed25519Priv, signedCert = realityServerCert()
+			signedCert = append([]byte{}, signedCert...)
+		}
 
 		h := hmac.New(sha512.New, hs.AuthKey)
 		h.Write(ed25519Priv[32:])
 		h.Sum(signedCert[:len(signedCert)-64])
+
+		if len(config.Mldsa65Key) > 0 {
+			h.Write(hs.clientHello.original)
+			h.Write(hs.hello.original)
+			key, _ := mldsa65.Scheme().UnmarshalBinaryPrivateKey(config.Mldsa65Key)
+			mldsa65.SignTo(key.(*mldsa65.PrivateKey), h.Sum(nil), nil, false, signedCert[126:]) // fixed location
+		}
 
 		hs.cert = &Certificate{
 			Certificate: [][]byte{signedCert},
