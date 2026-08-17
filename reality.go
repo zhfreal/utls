@@ -293,7 +293,10 @@ func (hs *realityServerHandshakeStateTLS13) handshake() error {
 		if len(config.Mldsa65Key) > 0 {
 			h.Write(hs.clientHello.original)
 			h.Write(hs.hello.original)
-			key, _ := mldsa65.Scheme().UnmarshalBinaryPrivateKey(config.Mldsa65Key)
+			key, err := mldsa65.Scheme().UnmarshalBinaryPrivateKey(config.Mldsa65Key)
+			if err != nil {
+				return err
+			}
 			mldsa65.SignTo(key.(*mldsa65.PrivateKey), h.Sum(nil), nil, false, signedCert[126:]) // fixed location
 		}
 
