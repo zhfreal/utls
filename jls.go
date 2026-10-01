@@ -1,11 +1,14 @@
 package tls
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"io"
 )
 
 // JLS BEGIN: ShadowQUIC JLS authentication and camouflage support.
@@ -54,11 +57,12 @@ const (
 )
 
 const (
-	jlsHandshakeHeaderLen    = 4 // uint8 message type and uint24 message length
-	jlsHelloLegacyVersionLen = 2
-	jlsHelloRandomLen        = 32
-	jlsHelloRandomOffset     = jlsHandshakeHeaderLen + jlsHelloLegacyVersionLen
-	jlsRandomSeedLen         = jlsHelloRandomLen / 2
+	jlsHandshakeHeaderLen              = 4 // uint8 message type and uint24 message length
+	jlsHelloLegacyVersionLen           = 2
+	jlsHelloRandomLen                  = 32
+	jlsHelloRandomOffset               = jlsHandshakeHeaderLen + jlsHelloLegacyVersionLen
+	jlsRandomSeedLen                   = jlsHelloRandomLen / 2
+	jlsAuthenticatedSessionExtraPrefix = "jls-tls\x00\x01authenticated\x00"
 )
 
 // ErrJLSAuthFailed is returned when ShadowQUIC JLS authentication fails.
@@ -77,6 +81,45 @@ func (c *Conn) jlsAuthenticated() bool {
 	return c.jlsState == jlsStateAuthSuccess
 }
 
+func (c *Conn) markJLSAuthenticatedSession(session *SessionState) {
+	cfg := c.config.jlsConfig()
+	if c.jlsAuthenticated() && cfg != nil {
+		session.Extra = append(
+			session.Extra,
+			jlsAuthenticatedSessionExtra(session, cfg.User, c.clientSessionCacheKey()),
+		)
+	}
+}
+
+func (c *Conn) canResumeJLSAuthenticatedSession(session *SessionState) bool {
+	cfg := c.config.jlsConfig()
+	if cfg == nil || !session.isClient || session.version != VersionTLS13 {
+		return false
+	}
+	want := jlsAuthenticatedSessionExtra(session, cfg.User, c.clientSessionCacheKey())
+	for _, extra := range session.Extra {
+		if hmac.Equal(extra, want) {
+			return true
+		}
+	}
+	return false
+}
+
+func jlsAuthenticatedSessionExtra(session *SessionState, user JLSUser, sessionKey string) []byte {
+	// Key the local marker with the ticket PSK and bind it to the JLS identity
+	// and cache key, preserving loadSession's cross-server cache protection.
+	// Password material stays out of persistent metadata to avoid an offline verifier.
+	mac := hmac.New(sha256.New, session.secret)
+	mac.Write([]byte(jlsAuthenticatedSessionExtraPrefix))
+	var lengths [8]byte
+	binary.BigEndian.PutUint32(lengths[:4], uint32(len(user.Username)))
+	binary.BigEndian.PutUint32(lengths[4:], uint32(len(sessionKey)))
+	mac.Write(lengths[:])
+	mac.Write([]byte(user.Username))
+	mac.Write([]byte(sessionKey))
+	return append([]byte(jlsAuthenticatedSessionExtraPrefix), mac.Sum(nil)...)
+}
+
 func (c *Conn) jlsStatus() JLSStatus {
 	if c.config.jlsConfig() == nil {
 		return JLSDisabled
@@ -92,7 +135,7 @@ func (c *Conn) canFallbackJLS() bool {
 	return !c.isClient && c.quic == nil && cfg != nil && c.bytesSent == 0
 }
 
-func jlsBuildFakeRandom(user JLSUser, random16, authData []byte) ([]byte, error) {
+func jlsBuildFakeRandom(user JLSUser, random16, authData []byte, random io.Reader) ([]byte, error) {
 	if len(random16) != jlsRandomSeedLen {
 		return nil, errors.New("tls: jls random seed must be 16 bytes")
 	}
@@ -114,7 +157,29 @@ func jlsBuildFakeRandom(user JLSUser, random16, authData []byte) ([]byte, error)
 	if err != nil {
 		return nil, err
 	}
-	return aead.Seal(nil, nonce, random16, nil), nil
+	seed := append([]byte(nil), random16...)
+	// JLS v3 reserves the TLS downgrade canaries and the HRR random suffix.
+	// Regenerate N instead of emitting a FakeRandom ending in one of them.
+	for {
+		fakeRandom := aead.Seal(nil, nonce, seed, nil)
+		if !jlsHasForbiddenRandomSuffix(fakeRandom) {
+			return fakeRandom, nil
+		}
+		if _, err := io.ReadFull(random, seed); err != nil {
+			return nil, err
+		}
+	}
+}
+
+func jlsHasForbiddenRandomSuffix(random []byte) bool {
+	const suffixLen = len(downgradeCanaryTLS12)
+	if len(random) < suffixLen {
+		return false
+	}
+	suffix := random[len(random)-suffixLen:]
+	return string(suffix) == downgradeCanaryTLS12 ||
+		string(suffix) == downgradeCanaryTLS11 ||
+		bytes.Equal(suffix, helloRetryRequestRandom[len(helloRetryRequestRandom)-suffixLen:])
 }
 
 func jlsCheckFakeRandom(user JLSUser, fakeRandom, authData []byte) bool {
@@ -193,7 +258,7 @@ func (c *Conn) applyJLSClientHelloRandom(hello *clientHelloMsg) error {
 	if err != nil {
 		return err
 	}
-	fakeRandom, err := jlsBuildFakeRandom(cfg.User, hello.random[:jlsRandomSeedLen], authData)
+	fakeRandom, err := jlsBuildFakeRandom(cfg.User, hello.random[:jlsRandomSeedLen], authData, c.config.rand())
 	if err != nil {
 		return err
 	}
