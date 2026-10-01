@@ -83,8 +83,8 @@ var realityTypes = [7]string{
 }
 
 func realityValue(vals ...byte) (value int) {
-	for i, val := range vals {
-		value |= int(val) << ((len(vals) - i - 1) * 8)
+	for i := 0; i < len(vals) && i < 3; i++ {
+		value |= int(vals[i]) << ((2 - i) * 8)
 	}
 	return
 }
@@ -297,7 +297,14 @@ func (hs *realityServerHandshakeStateTLS13) handshake() error {
 			if err != nil {
 				return err
 			}
-			mldsa65.SignTo(key.(*mldsa65.PrivateKey), h.Sum(nil), nil, false, signedCert[126:]) // fixed location
+			privKey, ok := key.(*mldsa65.PrivateKey)
+			if !ok {
+				return errors.New("tls: invalid ML-DSA-65 private key type")
+			}
+			if len(signedCert) < 126+mldsa65.SignatureSize {
+				return errors.New("tls: reality server certificate buffer too small for ML-DSA-65 signature")
+			}
+			mldsa65.SignTo(privKey, h.Sum(nil), nil, false, signedCert[126:]) // fixed location
 		}
 
 		hs.cert = &Certificate{
