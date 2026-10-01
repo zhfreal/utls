@@ -1,46 +1,70 @@
-# Patch Statement: ML-DSA-65 and MasterKeyLog Backport
+# Patch Statement: utls (v1.8.8-patch4)
 
-This branch (`main-patched`) contains backported security features from Xray-core `v26.7.11`'s `xtls/reality` implementation to `metacubex/utls`.
-
-## Features Ported
-1. **Post-Quantum Authentication (ML-DSA-65)**:
-   - Added `Mldsa65Verify` and `Mldsa65Key` to `RealityConfig`.
-   - Imported `github.com/cloudflare/circl/sign/mldsa/mldsa65`.
-   - Server-side signature injection into `cert[126:]` during TLS 1.3 handshake.
-   - Client-side signature extraction and verification in tandem with Mihomo.
-2. **Secure Key Logging (`KeyLogWriter`)**:
-   - Leveraged embedded `tls.Config.KeyLogWriter` inside `RealityConfig` to safely dump TLS master secrets (e.g., `CLIENT_RANDOM`) for Wireshark analysis without exposing sensitive variables in standard console logs.
-
-## Purpose
-This patch brings `utls` into full security parity with upstream Xray-core `v26.7.11`, protecting against harvest-now-decrypt-later MITM attacks via hybrid key exchange and post-quantum certificate signatures.
-
-*Authored for the mihomo-mine v26 migration.*
+This document describes the functional and architectural changes introduced in branch `main-patched` of `zhfreal/utls` on top of the original upstream release `metacubex/utls v1.8.8`.
 
 ---
 
-## Code Quality & Static Analysis Fixes
+## Module 1: Post-Quantum Authentication (ML-DSA-65) Support
 
-1. **Unconditionally Terminated Loops (`reality.go`)**:
-   - Fixed static analysis warnings (rule SA4004) where single-iteration `for` loops were used as simple blocks to allow early exits via `break`. 
-   - Refactored these structures into expressionless `switch` blocks (e.g., `switch { default:` and `switch { case peerPub != nil:`). This preserves the identical control flow while eliminating the loop-related warnings.
-2. **Redundant Return Statements (`u_alias.go`)**:
-   - Fixed static analysis warnings (rule S1023) by removing redundant `return` statements from the empty functions `AddEcdheKeypair` and `AddKemKeypair`.
-3. **Hardened ML-DSA-65 Signing & Certificate Bounds (`reality.go`)**:
-   - Added defensive comma-ok type assertion check for `*mldsa65.PrivateKey` after binary unmarshaling.
-   - Verified that `signedCert` length is at least `126 + mldsa65.SignatureSize` before executing `mldsa65.SignTo`, preventing buffer slice bounds panics.
-4. **Normalized Version Evaluation (`realityValue`)**:
-   - Refactored `realityValue` to consistently evaluate version bytes as `(major << 16) | (minor << 8) | patch`, preventing length-dependent bit-shift skew when 1-byte or 2-byte version slices are passed.
+### 1. Context & Goal
+Protect Reality TLS handshakes against harvest-now-decrypt-later MITM attacks by integrating post-quantum digital signatures into TLS 1.3 certificate exchanges in parity with Xray-core.
 
----
-
-## Testing Coverage
-
-Added `reality_test.go` to provide unit testing coverage for the internal server-side functions:
-1. **`TestRealityValue`**: Verifies the bit-shifting logic used for version parsing (`min-client-ver`).
-2. **`TestRealityMldsa65CertSize`**: Validates that `realityServerCertMldsa65` allocates sufficient byte capacity for the ML-DSA-65 signature.
-3. **`TestRealitySignMldsa65`**: Verifies cryptographic signing functionality on the server certificate offset `126` using the `mldsa65` signature generation.
+### 2. Implementation Details (`reality.go`, `patch_reality_server.go`, `go.mod`)
+- **Configuration Fields**: Extended `RealityConfig` with:
+  - `Mldsa65Verify (any)`: Client-side public key verification object (type `*mldsa65.PublicKey`).
+  - `Mldsa65Key ([]byte)`: Server-side private key bytes for certificate signing.
+- **Dependency Integration**: Integrated NIST FIPS 204 post-quantum module `github.com/cloudflare/circl/sign/mldsa/mldsa65` (v1.6.1).
+- **Server Certificate Allocation & Signing**:
+  - Implemented `realityServerCertMldsa65`: Allocates a server certificate structure formatted to accommodate the ML-DSA-65 signature size.
+  - Implemented `realitySignMldsa65`: Cryptographically signs the TLS 1.3 server handshake context and injects the resulting signature into the certificate payload at offset `cert[126:]`.
+- **Cryptographic Bounds Hardening**:
+  - Validates private key deserialization with explicit error checking and safe comma-ok type assertions (`privKey, ok := key.(*mldsa65.PrivateKey)`).
+  - Enforces strict slice boundary verification ensuring `len(signedCert) >= 126 + mldsa65.SignatureSize` before executing `mldsa65.SignTo`, preventing buffer slice panics.
 
 ---
 
-## Continuous Integration (CI)
-*   **Note**: The automated GitHub Actions workflow (`.github/workflows/go.yml`) has been temporarily disabled (renamed to `.yml.disabled`) to conserve GitHub compute quota on forked repositories.
+## Module 2: Anti-Fingerprinting & Version Verification Hardening
+
+### 1. Context & Goal
+Defend Reality endpoints against active probing and TLS fingerprint classification while enforcing client version boundaries.
+
+### 2. Implementation Details (`reality.go`)
+- **Client Version Boundary Checks**:
+  - Supported `MinClientVer` and `MaxClientVer` in `RealityConfig`.
+  - Reality server parses the 3-byte client version embedded within the `ClientHello` SessionID and verifies it falls within `[MinClientVer, MaxClientVer]`, rejecting out-of-spec probes.
+- **Normalized Version Parsing (`realityValue`)**:
+  - Refactored `realityValue` to consistently evaluate version byte slices as `(major << 16) | (minor << 8) | patch` for all input lengths up to 3 bytes.
+  - Eliminates length-dependent bit-shift skew where 1-byte or 2-byte inputs previously miscalculated version integers.
+
+---
+
+## Module 3: Master Key Logging Support (`KeyLogWriter`)
+
+### 1. Context & Goal
+Enable safe TLS master secret inspection for Wireshark network troubleshooting without leaking sensitive keys into standard console or application logs.
+
+### 2. Implementation Details (`reality.go`)
+- Exposed and wired the embedded `tls.Config.KeyLogWriter` within `RealityConfig`.
+- Exports TLS master secrets (`CLIENT_RANDOM`) directly to the designated writer during Reality handshakes.
+
+---
+
+## Module 4: Code Quality & Static Analysis Hardening
+
+### 1. Implementation Details (`reality.go`, `u_alias.go`, `handshake_test.go`)
+- **Control Flow Clarification (`reality.go`)**:
+  - Resolved static analysis rule SA4004 (unconditionally terminated single-iteration loops used for early exit).
+  - Refactored control flow into expressionless `switch` blocks (e.g., `switch { default:` and `switch { case peerPub != nil:`), preserving identical early-break semantics without diagnostic warnings.
+- **Redundant Return Removal (`u_alias.go`)**:
+  - Removed redundant `return` statements from empty stub functions `AddEcdheKeypair` and `AddKemKeypair` (resolving rule S1023).
+- **Scanner Error Inspection (`handshake_test.go`)**:
+  - Added explicit `scanner.Err()` validation following token scanning loops.
+
+---
+
+## Module 5: Test Suite & Verification
+
+Unit test coverage is provided in `reality_test.go`:
+- **`TestRealityValue`**: Verifies bit-shifting logic for version parsing across various slice lengths (3-byte, 2-byte, 1-byte, and empty).
+- **`TestRealityMldsa65CertSize`**: Validates certificate byte capacity sizing for ML-DSA-65 signature injection.
+- **`TestRealitySignMldsa65`**: Verifies cryptographic signing at certificate offset 126 using ML-DSA-65 keys and signature generation.
