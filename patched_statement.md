@@ -1,6 +1,6 @@
 # Patch Statement: ML-DSA-65 and MasterKeyLog Backport
 
-This branch (`patch-reality-v26`) contains backported security features from Xray-core `v26.7.11`'s `xtls/reality` implementation to `metacubex/utls`.
+This branch (`main-patched`) contains backported security features from Xray-core `v26.7.11`'s `xtls/reality` implementation to `metacubex/utls`.
 
 ## Features Ported
 1. **Post-Quantum Authentication (ML-DSA-65)**:
