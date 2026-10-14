@@ -101,8 +101,8 @@ func (hs *clientHandshakeStateTLS13) decompressCert(m utlsCompressedCertificateM
 	rawMsg[2] = uint8(m.uncompressedLength >> 8)
 	rawMsg[3] = uint8(m.uncompressedLength)
 
-	n, err := decompressed.Read(rawMsg[4:])
-	if err != nil && !errors.Is(err, io.EOF) {
+	n, err := io.ReadFull(decompressed, rawMsg[4:])
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
 		c.sendAlert(alertBadCertificate)
 		return nil, err
 	}
@@ -112,6 +112,24 @@ func (hs *clientHandshakeStateTLS13) decompressCert(m utlsCompressedCertificateM
 		// https://datatracker.ietf.org/doc/html/rfc8879#section-4
 		c.sendAlert(alertBadCertificate)
 		return nil, fmt.Errorf("decompressed len (%d) does not match specified len (%d)", n, m.uncompressedLength)
+	}
+	// Read through the end of the stream to detect excess output and terminal
+	// decoder errors that may be deferred until after the last output byte.
+	var extra [1]byte
+	n, err = io.ReadFull(decompressed, extra[:])
+	if n != 0 {
+		c.sendAlert(alertBadCertificate)
+		return nil, fmt.Errorf("decompressed len exceeds specified len (%d)", m.uncompressedLength)
+	}
+	if !errors.Is(err, io.EOF) {
+		c.sendAlert(alertBadCertificate)
+		return nil, err
+	}
+	// A decoder can stop at the end of its stream without consuming the rest
+	// of the compressed certificate message.
+	if compressed.Len() != 0 {
+		c.sendAlert(alertBadCertificate)
+		return nil, errors.New("trailing data after compressed certificate stream")
 	}
 	certMsg := new(certificateMsgTLS13)
 	if !certMsg.unmarshal(rawMsg) {

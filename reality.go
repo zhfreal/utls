@@ -15,6 +15,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/cloudflare/circl/sign/mldsa/mldsa65"
 	"io"
 	"math/big"
 	"net"
@@ -82,8 +83,8 @@ var realityTypes = [7]string{
 }
 
 func realityValue(vals ...byte) (value int) {
-	for i, val := range vals {
-		value |= int(val) << ((len(vals) - i - 1) * 8)
+	for i := 0; i < len(vals) && i < 3; i++ {
+		value |= int(vals[i]) << ((2 - i) * 8)
 	}
 	return
 }
@@ -111,6 +112,8 @@ type RealityConfig struct {
 
 	LimitFallbackUpload   RealityLimitFallback
 	LimitFallbackDownload RealityLimitFallback
+	Mldsa65Verify         []byte
+	Mldsa65Key            []byte
 
 	Config
 }
@@ -130,6 +133,8 @@ func (a *RealityConfig) Clone() *RealityConfig {
 		ShortIds:              a.ShortIds,
 		LimitFallbackUpload:   a.LimitFallbackUpload,
 		LimitFallbackDownload: a.LimitFallbackDownload,
+		Mldsa65Verify:         a.Mldsa65Verify,
+		Mldsa65Key:            a.Mldsa65Key,
 		Config:                *a.Config.Clone(),
 	}
 }
@@ -269,12 +274,36 @@ func (hs *realityServerHandshakeStateTLS13) handshake() error {
 		}
 	*/
 	{
-		ed25519Priv, signedCert := realityServerCert()
-		signedCert = append([]byte{}, signedCert...)
+		var ed25519Priv ed25519.PrivateKey
+		var signedCert []byte
+		if len(config.Mldsa65Key) > 0 {
+			ed25519Priv, signedCert = realityServerCertMldsa65()
+			signedCert = append([]byte{}, signedCert...)
+		} else {
+			ed25519Priv, signedCert = realityServerCert()
+			signedCert = append([]byte{}, signedCert...)
+		}
 
 		h := hmac.New(sha512.New, hs.AuthKey)
 		h.Write(ed25519Priv[32:])
 		h.Sum(signedCert[:len(signedCert)-64])
+
+		if len(config.Mldsa65Key) > 0 {
+			h.Write(hs.clientHello.original)
+			h.Write(hs.hello.original)
+			key, err := mldsa65.Scheme().UnmarshalBinaryPrivateKey(config.Mldsa65Key)
+			if err != nil {
+				return err
+			}
+			privKey, ok := key.(*mldsa65.PrivateKey)
+			if !ok {
+				return errors.New("tls: invalid ML-DSA-65 private key type")
+			}
+			if len(signedCert) < 126+mldsa65.SignatureSize {
+				return errors.New("tls: reality server certificate buffer too small for ML-DSA-65 signature")
+			}
+			mldsa65.SignTo(privKey, h.Sum(nil), nil, false, signedCert[126:]) // fixed location
+		}
 
 		hs.cert = &Certificate{
 			Certificate: [][]byte{signedCert},
@@ -379,7 +408,8 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 	waitGroup.Add(2)
 
 	go func() {
-		for {
+		switch {
+		default:
 			mutex.Lock()
 			hs.clientHello, _, err = hs.c.readClientHello(context.Background()) // TODO: Change some rules in this function.
 			if copying || err != nil || hs.c.vers != VersionTLS13 || !config.ServerNames[hs.clientHello.serverName] {
@@ -400,7 +430,8 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 					}
 				}
 			}
-			for peerPub != nil {
+			switch {
+			case peerPub != nil:
 				if hs.AuthKey, err = curve25519.X25519(config.PrivateKey, peerPub); err != nil {
 					break
 				}
@@ -434,12 +465,10 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 					(config.ShortIds[hs.ClientShortId]) {
 					hs.c.conn = conn
 				}
-				break
 			}
 			if config.Log != nil {
 				config.Log("REALITY remoteAddr: %v hs.c.conn == conn: %v", remoteAddr, hs.c.conn == conn)
 			}
-			break
 		}
 		mutex.Unlock()
 		if hs.c.conn != conn {
@@ -484,13 +513,17 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 					break
 				}
 				if handshakeLen == 0 && len(s2cSaved) > recordHeaderLen {
-					if realityValue(s2cSaved[1:3]...) != VersionTLS12 ||
+					recVer := int(binary.BigEndian.Uint16(s2cSaved[1:3]))
+					if recVer != VersionTLS12 ||
 						(i == 0 && (recordType(s2cSaved[0]) != recordTypeHandshake || s2cSaved[5] != typeServerHello)) ||
 						(i == 1 && (recordType(s2cSaved[0]) != recordTypeChangeCipherSpec || s2cSaved[5] != 1)) ||
 						(i > 1 && recordType(s2cSaved[0]) != recordTypeApplicationData) {
+						if config.Log != nil {
+							config.Log("REALITY remoteAddr: %v record %d mismatch: recVer=0x%04x, recType=%x, firstByte=%x", remoteAddr, i, recVer, s2cSaved[0], s2cSaved[5])
+						}
 						break f
 					}
-					handshakeLen = recordHeaderLen + realityValue(s2cSaved[3:5]...)
+					handshakeLen = recordHeaderLen + int(binary.BigEndian.Uint16(s2cSaved[3:5]))
 				}
 				if config.Log != nil {
 					config.Log("REALITY remoteAddr: %v len(s2cSaved): %v %v: %v", remoteAddr, len(s2cSaved), t, handshakeLen)
