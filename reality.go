@@ -515,13 +515,17 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 					break
 				}
 				if handshakeLen == 0 && len(s2cSaved) > recordHeaderLen {
-					if realityValue(s2cSaved[1:3]...) != VersionTLS12 ||
+					recVer := int(binary.BigEndian.Uint16(s2cSaved[1:3]))
+					if recVer != VersionTLS12 ||
 						(i == 0 && (recordType(s2cSaved[0]) != recordTypeHandshake || s2cSaved[5] != typeServerHello)) ||
 						(i == 1 && (recordType(s2cSaved[0]) != recordTypeChangeCipherSpec || s2cSaved[5] != 1)) ||
 						(i > 1 && recordType(s2cSaved[0]) != recordTypeApplicationData) {
+						if config.Log != nil {
+							config.Log("REALITY remoteAddr: %v record %d mismatch: recVer=0x%04x, recType=%x, firstByte=%x", remoteAddr, i, recVer, s2cSaved[0], s2cSaved[5])
+						}
 						break f
 					}
-					handshakeLen = recordHeaderLen + realityValue(s2cSaved[3:5]...)
+					handshakeLen = recordHeaderLen + int(binary.BigEndian.Uint16(s2cSaved[3:5]))
 				}
 				if config.Log != nil {
 					config.Log("REALITY remoteAddr: %v len(s2cSaved): %v %v: %v", remoteAddr, len(s2cSaved), t, handshakeLen)
