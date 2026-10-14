@@ -55,6 +55,7 @@ type keySharePrivateKeys struct {
 	mlkem mlkem.Decapsulator
 
 	mlkemEcdhe *ecdh.PrivateKey // [uTLS] seperate ecdhe key for pq keyshare in line with Chrome, instead of reusing ecdhe key like stdlib
+	keys       map[CurveID]*ecdh.PrivateKey
 }
 
 // A keyExchange implements a TLS 1.3 KEM.
@@ -161,6 +162,9 @@ func (ke *ecdhKeyExchange) clientSharedSecretChooseEcdhe(priv *keySharePrivateKe
 	}
 	//[uTLS] SECTION START
 	ecdhe := priv.ecdhe
+	if priv.keys != nil && priv.keys[ke.id] != nil {
+		ecdhe = priv.keys[ke.id]
+	}
 	if useSeperateEcdhe {
 		if priv.mlkemEcdhe == nil {
 			return nil, errors.New("tls: missing separate hybrid ECDHE private key")

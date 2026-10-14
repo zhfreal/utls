@@ -181,6 +181,8 @@ const (
 	helloSafari           = "Safari"
 	hello360              = "360Browser"
 	helloQQ               = "QQBrowser"
+	helloOpera            = "Opera"
+	helloBrave            = "Brave"
 
 	// versions
 	helloAutoVers = "0"
@@ -662,7 +664,10 @@ var (
 	HelloIOS_14   = ClientHelloID{helloIOS, "14", nil, nil}
 	HelloIOS_26_3 = ClientHelloID{helloIOS, "26.3", nil, nil}
 
+	HelloAndroid_Auto      = HelloAndroid_14_OkHttp
 	HelloAndroid_11_OkHttp = ClientHelloID{helloAndroid, "11", nil, nil}
+	HelloAndroid_14_OkHttp = ClientHelloID{helloAndroid, "14", nil, nil}
+	HelloAndroid_15_OkHttp = ClientHelloID{helloAndroid, "15", nil, nil}
 
 	HelloEdge_Auto = HelloEdge_155
 	HelloEdge_85   = ClientHelloID{helloEdge, "85", nil, nil}
@@ -673,12 +678,22 @@ var (
 	HelloSafari_16_0 = ClientHelloID{helloSafari, "16.0", nil, nil}
 	HelloSafari_26_3 = ClientHelloID{helloSafari, "26.3", nil, nil}
 
-	Hello360_Auto = Hello360_7_5 // Hello360_11_0 seems to be incompatible with this library
-	Hello360_7_5  = ClientHelloID{hello360, "7.5", nil, nil}
-	Hello360_11_0 = ClientHelloID{hello360, "11.0", nil, nil}
+	Hello360_Auto  = Hello360_122
+	Hello360_7_5   = ClientHelloID{hello360, "7.5", nil, nil}
+	Hello360_11_0  = ClientHelloID{hello360, "11.0", nil, nil}
+	Hello360_122   = ClientHelloID{hello360, "122", nil, nil}
 
-	HelloQQ_Auto = HelloQQ_11_1
-	HelloQQ_11_1 = ClientHelloID{helloQQ, "11.1", nil, nil}
+	HelloQQ_Auto   = HelloQQ_123
+	HelloQQ_11_1   = ClientHelloID{helloQQ, "11.1", nil, nil}
+	HelloQQ_123    = ClientHelloID{helloQQ, "123", nil, nil}
+
+	HelloOpera_Auto = HelloOpera_91
+	HelloOpera_89   = ClientHelloID{helloOpera, "89", nil, nil}
+	HelloOpera_90   = ClientHelloID{helloOpera, "90", nil, nil}
+	HelloOpera_91   = ClientHelloID{helloOpera, "91", nil, nil}
+
+	HelloBrave_Auto = HelloBrave_146
+	HelloBrave_146  = ClientHelloID{helloBrave, "146", nil, nil}
 )
 
 type Weights struct {

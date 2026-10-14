@@ -20,6 +20,12 @@ import (
 
 // verifyHandshakeSignature verifies a signature against unhashed handshake contents.
 func verifyHandshakeSignature(sigType uint8, pubkey crypto.PublicKey, hashFunc crypto.Hash, signed, sig []byte) error {
+	if sigType == signatureMLDSA {
+		if hashFunc != directSigning {
+			return errors.New("tls: ML-DSA requires direct signing")
+		}
+		return verifyMLDSAHandshakeSignature(pubkey, signed, sig)
+	}
 	if hashFunc != directSigning {
 		h := hashFunc.New()
 		h.Write(signed)
@@ -130,6 +136,8 @@ func typeAndHashFromSignatureScheme(signatureAlgorithm SignatureScheme) (sigType
 		sigType = signatureECDSA
 	case Ed25519:
 		sigType = signatureEd25519
+	case MLDSA44, MLDSA65, MLDSA87:
+		sigType = signatureMLDSA
 	default:
 		return 0, 0, fmt.Errorf("unsupported signature algorithm: %v", signatureAlgorithm)
 	}
@@ -142,7 +150,7 @@ func typeAndHashFromSignatureScheme(signatureAlgorithm SignatureScheme) (sigType
 		hash = crypto.SHA384
 	case PKCS1WithSHA512, PSSWithSHA512, ECDSAWithP521AndSHA512:
 		hash = crypto.SHA512
-	case Ed25519:
+	case Ed25519, MLDSA44, MLDSA65, MLDSA87:
 		hash = directSigning
 	default:
 		return 0, 0, fmt.Errorf("unsupported signature algorithm: %v", signatureAlgorithm)
@@ -222,6 +230,9 @@ func signatureSchemesForPublicKey(version uint16, pub crypto.PublicKey) []Signat
 	case ed25519.PublicKey:
 		return []SignatureScheme{Ed25519}
 	default:
+		if scheme, ok := mldsaSchemeForPublicKey(pub); ok {
+			return []SignatureScheme{scheme}
+		}
 		return nil
 	}
 }

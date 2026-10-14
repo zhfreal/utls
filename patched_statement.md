@@ -1,6 +1,6 @@
-# Patch Statement: utls (v1.9.0-patch1)
+# Patch Statement: utls (v1.9.0-patch3)
 
-This document describes the functional and architectural changes introduced in branch `main-patched` of `zhfreal/utls` on top of upstream `metacubex/utls v1.9.0-mod-meta` and backported features from `refraction-networking/utls:master`.
+This document describes the functional and architectural changes introduced in branch `main-patched` of `zhfreal/utls` on top of upstream `metacubex/utls v1.9.0-mod-meta` and backported features from `refraction-networking/utls:master`, `bogdanfinn/utls`, and modern browser ecosystem captures.
 
 ---
 
@@ -65,6 +65,8 @@ This document describes the functional and architectural changes introduced in b
   - `TestChrome155CapturedClientHello`, `TestChrome155DefaultFingerprintRoundTrip`, `TestChrome155PresetOwnership`, `TestChrome155SignatureGREASESeed` in `u_chrome155_test.go`.
   - Full suite in `u_trust_anchors_test.go`.
   - `TestModernBrowserAutoDefaults`, `TestFirefox157MatchesCapture`, `TestFirefox157WithSNI` in `u_firefox157_test.go`.
+  - `TestNewOnlineFingerprintPresets`, `TestMultiKeyShareCycling` in `u_parrots_new_test.go`.
+  - `TestMLDSAVerifyHandshakeSignature`, `TestMLDSAVerifyRejectsNonMLDSAKey`, `TestMLDSATypeAndHash`, `TestMLDSAIsSignatureScheme`, `TestMLDSASchemeRecoveryFromSPKI` in `mldsa_test.go`.
 
 ---
 
@@ -89,3 +91,31 @@ This document describes the functional and architectural changes introduced in b
   - Upgraded from legacy iOS 14 (2020) to current Apple Network.framework / CFNetwork / Security.framework TLS 1.3 spec.
   - Matches Safari 26.3 with `X25519MLKEM768` post-quantum key exchange, GREASE, and modern cipher ordering.
   - Set `HelloIOS_Auto = HelloIOS_26_3`.
+
+---
+
+## Module 8: Online Repositories Integration: Modern Android, Brave, Opera, 360, QQ & Multi-KeyShare Cycling
+- **Modern Android & OkHttp 4/5 (`HelloAndroid_14_OkHttp`, `HelloAndroid_15_OkHttp`, `HelloAndroid_Auto`)**:
+  - Upgraded from obsolete TLS 1.2-only `HelloAndroid_11_OkHttp` to modern Conscrypt/OkHttp TLS 1.3 stack.
+  - Supported: `TLS_AES_128_GCM_SHA256`, `TLS_AES_256_GCM_SHA384`, `TLS_CHACHA20_POLY1305_SHA256`, X25519 KeyShare, ALPN (`h2`, `http/1.1`), PskModeDHE, and BoringPaddingStyle.
+  - Set `HelloAndroid_Auto = HelloAndroid_14_OkHttp`.
+- **Brave Browser (`HelloBrave_146`, `HelloBrave_Auto`)**:
+  - Implemented Brave Browser privacy suite matching real-world browser captures (`RandomExtensionOrder = true`).
+  - Automatically randomizes non-GREASE extensions while preserving bookends, defeating extension-order fingerprinting.
+  - Includes `X25519MLKEM768` hybrid post-quantum key agreement, ALPS, GREASE ECH, and Brotli compression.
+  - Set `HelloBrave_Auto = HelloBrave_146`.
+- **Opera Browser (`HelloOpera_89`, `HelloOpera_90`, `HelloOpera_91`, `HelloOpera_Auto`)**:
+  - Integrated Opera Chromium BoringSSL desktop profile.
+  - Set `HelloOpera_Auto = HelloOpera_91`.
+- **360 Extreme Browser (`Hello360_122`, `Hello360_Auto`) & QQ Browser (`HelloQQ_123`, `HelloQQ_Auto`)**:
+  - Upgraded 360 Browser from legacy versions 7.5 (2014) and 11.0 (2019) to modern Chromium 122+ engine (`Hello360_122`).
+  - Upgraded QQ Browser from legacy version 11.1 (Chromium 89) to modern Chromium 123+ engine (`HelloQQ_123`).
+  - Set `Hello360_Auto = Hello360_122` and `HelloQQ_Auto = HelloQQ_123`.
+- **Dynamic Multi-KeyShare Cycling**:
+  - Resolved TLS 1.3 handshake failures when servers select secondary key shares (e.g. `CurveP256` or fallback).
+  - Maintained `Keys map[CurveID]*ecdh.PrivateKey` in `keySharePrivateKeys` and `KeySharePrivateKeys` to store all generated keys by group.
+- **End-to-End ML-DSA Certificate Signature Verification**:
+  - Implemented `mldsa.go` and `mldsa_circl.go` using CIRCL.
+  - Recovered unparsed SPKI public keys from `RawSubjectPublicKeyInfo` via `circlpki.UnmarshalPKIXPublicKey`.
+  - Dispatched `signatureMLDSA` directly to `verifyMLDSAHandshakeSignature` with direct signing.
+
