@@ -687,10 +687,11 @@ var (
 	HelloQQ_11_1   = ClientHelloID{helloQQ, "11.1", nil, nil}
 	HelloQQ_123    = ClientHelloID{helloQQ, "123", nil, nil}
 
-	HelloOpera_Auto = HelloOpera_91
+	HelloOpera_Auto = HelloOpera_136
 	HelloOpera_89   = ClientHelloID{helloOpera, "89", nil, nil}
 	HelloOpera_90   = ClientHelloID{helloOpera, "90", nil, nil}
 	HelloOpera_91   = ClientHelloID{helloOpera, "91", nil, nil}
+	HelloOpera_136  = ClientHelloID{helloOpera, "136", nil, nil}
 
 	HelloBrave_Auto = HelloBrave_146
 	HelloBrave_146  = ClientHelloID{helloBrave, "146", nil, nil}

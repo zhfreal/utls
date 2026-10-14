@@ -29,6 +29,7 @@ func TestNewOnlineFingerprintPresets(t *testing.T) {
 		{"Opera_89", HelloOpera_89, true, true, true},
 		{"Opera_90", HelloOpera_90, true, true, true},
 		{"Opera_91", HelloOpera_91, true, true, true},
+		{"Opera_136", HelloOpera_136, true, true, true},
 		{"Opera_Auto", HelloOpera_Auto, true, true, true},
 		{"360_122", Hello360_122, true, true, true},
 		{"360_Auto", Hello360_Auto, true, true, true},

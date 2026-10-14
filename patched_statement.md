@@ -104,9 +104,12 @@ This document describes the functional and architectural changes introduced in b
   - Automatically randomizes non-GREASE extensions while preserving bookends, defeating extension-order fingerprinting.
   - Includes `X25519MLKEM768` hybrid post-quantum key agreement, ALPS, GREASE ECH, and Brotli compression.
   - Set `HelloBrave_Auto = HelloBrave_146`.
-- **Opera Browser (`HelloOpera_89`, `HelloOpera_90`, `HelloOpera_91`, `HelloOpera_Auto`)**:
-  - Integrated Opera Chromium BoringSSL desktop profile.
-  - Set `HelloOpera_Auto = HelloOpera_91`.
+- **Opera Browser (`HelloOpera_136`, `HelloOpera_Auto`, `HelloOpera_91`, `HelloOpera_90`, `HelloOpera_89`)**:
+  - Live captured authentic TLS ClientHello from locally installed Opera 136 (`136.0.6008.80`, Chromium 136 engine).
+  - Integrated full modern Chromium BoringSSL fingerprint: `X25519MLKEM768` hybrid post-quantum key agreement, `MLDSA44`/`MLDSA65`/`MLDSA87` post-quantum signature schemes, `ApplicationSettingsExtensionNew` (`0x44cd` ALPS), `BoringGREASEECH`, and authentic 32 Trust Anchor IDs (`0xca34` Chrome Root Store).
+  - Applied `ShuffleChromeTLSExtensions` to emulate Chromium extension order permutation.
+  - Set `HelloOpera_Auto = HelloOpera_136`.
+  - Added wire verification tests in `u_opera136_test.go` and fixture `testdata/opera136_clienthello.hex`.
 - **360 Extreme Browser (`Hello360_122`, `Hello360_Auto`) & QQ Browser (`HelloQQ_123`, `HelloQQ_Auto`)**:
   - Upgraded 360 Browser from legacy versions 7.5 (2014) and 11.0 (2019) to modern Chromium 122+ engine (`Hello360_122`).
   - Upgraded QQ Browser from legacy version 11.1 (Chromium 89) to modern Chromium 123+ engine (`HelloQQ_123`).
