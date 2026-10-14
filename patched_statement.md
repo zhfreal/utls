@@ -64,3 +64,28 @@ This document describes the functional and architectural changes introduced in b
   - `TestRealityValue`, `TestRealityMldsa65CertSize`, `TestRealitySignMldsa65` in `reality_test.go`.
   - `TestChrome155CapturedClientHello`, `TestChrome155DefaultFingerprintRoundTrip`, `TestChrome155PresetOwnership`, `TestChrome155SignatureGREASESeed` in `u_chrome155_test.go`.
   - Full suite in `u_trust_anchors_test.go`.
+  - `TestModernBrowserAutoDefaults`, `TestFirefox157MatchesCapture`, `TestFirefox157WithSNI` in `u_firefox157_test.go`.
+
+---
+
+## Module 7: Latest Browser Fingerprints Integration & Live Browser Verification
+- **Mozilla Firefox 157 (`HelloFirefox_157`)**:
+  - Captured from and verified against official Mozilla Firefox 157.0 (Linux x86_64, NSS).
+  - Pruned obsolete CBC-mode ECDSA cipher suites (`TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA`, `TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA`) matching current NSS security policy.
+  - Group alignment: `X25519MLKEM768`, `X25519`, `CurveP256`, `CurveP384`, `CurveP521` (FFDHE groups removed from default ClientHello).
+  - Key Shares: Reuses classical X25519 private key across both hybrid `X25519MLKEM768` and classical `X25519`, with secondary share for `CurveP256` (1,327 bytes total).
+  - Modern extensions added: `session_ticket` (`35`) and `psk_key_exchange_modes` (`45`).
+  - Set `HelloFirefox_Auto = HelloFirefox_157`.
+  - Fixture recorded in `testdata/firefox157_clienthello.hex` with markdown documentation and automated regression tests in `u_firefox157_test.go`.
+- **Google Chrome 155 (`HelloChrome_155`)**:
+  - Verified against official Google Chrome 155.0.8059.79.
+  - Confirmed 100% byte-for-byte fidelity across ciphers, groups, key shares, ML-DSA signatures, ALPS (`0x44cd`), BoringSSL GREASE ECH, and Chrome Root Store Trust Anchors (`0xca34`).
+  - Set `HelloChrome_Auto = HelloChrome_155`.
+- **Microsoft Edge 155 (`HelloEdge_155`)**:
+  - Upgraded from obsolete Chromium 106 to modern Chromium 155 BoringSSL engine.
+  - Parrots full modern Chromium fingerprint suite.
+  - Set `HelloEdge_Auto = HelloEdge_155`.
+- **Apple iOS 26.3 (`HelloIOS_26_3`)**:
+  - Upgraded from legacy iOS 14 (2020) to current Apple Network.framework / CFNetwork / Security.framework TLS 1.3 spec.
+  - Matches Safari 26.3 with `X25519MLKEM768` post-quantum key exchange, GREASE, and modern cipher ordering.
+  - Set `HelloIOS_Auto = HelloIOS_26_3`.
