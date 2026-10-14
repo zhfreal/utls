@@ -23,8 +23,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/metacubex/utls/internal/mlkem"
 	"github.com/metacubex/utls/internal/ratelimit"
+	"github.com/metacubex/utls/mlkem"
 
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/hkdf"
@@ -208,8 +208,6 @@ var realityServerCert = onceValues(func() (ed25519Priv ed25519.PrivateKey, signe
 	signedCert, _ = x509.CreateCertificate(rand.Reader, &certificate, &certificate, ed25519.PublicKey(ed25519Priv[32:]), ed25519Priv)
 	return
 })
-
-
 
 type realityServerHandshakeStateTLS13 struct {
 	serverHandshakeStateTLS13

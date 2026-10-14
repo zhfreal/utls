@@ -1,21 +1,25 @@
-# Patch Statement: utls (v1.8.8-patch4)
+# Patch Statement: utls (v1.9.0-patch1)
 
-This document describes the functional and architectural changes introduced in branch `main-patched` of `zhfreal/utls` on top of the original upstream release `metacubex/utls v1.8.8`.
+This document describes the functional and architectural changes introduced in branch `main-patched` of `zhfreal/utls` on top of upstream `metacubex/utls v1.9.0-mod-meta` and backported features from `refraction-networking/utls:master`.
 
 ---
 
-## Module 1: Post-Quantum Authentication (ML-DSA-65) Support
+## Module 1: Upstream Sync to MetaCubeX v1.9.0-mod-meta
+- **Core Standard Library Modernization**: Rebased onto modern Go crypto/tls standard library codebase.
+- **Post-Quantum Hybrid Key Exchange**: Native integration of NIST FIPS 203 ML-KEM (`crypto/mlkem`) supporting `X25519MLKEM768`, `SecP256r1MLKEM768`, and `SecP384r1MLKEM1024`.
+- **RFC 8879 Certificate Compression**: Full support for Brotli, Zstandard, and Zlib certificate compression.
+- **Enhanced Browser Profiles**: Includes Safari 26.3 (`aa6edf4`, parity with Xray-core), Firefox 148 with KeyShare reuse, and Chrome 133+.
+- **MetaCubeX Reality & JLS**: Updated Reality Server and ShadowQUIC JLS authentication for v1.9.0 TLS 1.3 state structures.
 
-### 1. Context & Goal
-Protect Reality TLS handshakes against harvest-now-decrypt-later MITM attacks by integrating post-quantum digital signatures into TLS 1.3 certificate exchanges in parity with Xray-core.
+---
 
-### 2. Implementation Details (`reality.go`, `patch_reality_server.go`, `go.mod`)
+## Module 2: Post-Quantum Authentication (ML-DSA-65) Reality Support
 - **Configuration Fields**: Extended `RealityConfig` with:
-  - `Mldsa65Verify (any)`: Client-side public key verification object (type `*mldsa65.PublicKey`).
+  - `Mldsa65Verify ([]byte)`: Client-side public key verification object.
   - `Mldsa65Key ([]byte)`: Server-side private key bytes for certificate signing.
-- **Dependency Integration**: Integrated NIST FIPS 204 post-quantum module `github.com/cloudflare/circl/sign/mldsa/mldsa65` (v1.6.1).
+- **Dependency Integration**: Integrated NIST FIPS 204 post-quantum module `github.com/cloudflare/circl/sign/mldsa/mldsa65` (v1.6.4).
 - **Server Certificate Allocation & Signing**:
-  - Implemented `realityServerCertMldsa65`: Allocates a server certificate structure formatted to accommodate the ML-DSA-65 signature size.
+  - Implemented `realityServerCertMldsa65`: Allocates a server certificate structure formatted to accommodate the ML-DSA-65 signature size (3309 bytes).
   - Implemented `realitySignMldsa65`: Cryptographically signs the TLS 1.3 server handshake context and injects the resulting signature into the certificate payload at offset `cert[126:]`.
 - **Cryptographic Bounds Hardening**:
   - Validates private key deserialization with explicit error checking and safe comma-ok type assertions (`privKey, ok := key.(*mldsa65.PrivateKey)`).
@@ -23,48 +27,40 @@ Protect Reality TLS handshakes against harvest-now-decrypt-later MITM attacks by
 
 ---
 
-## Module 2: Anti-Fingerprinting & Version Verification Hardening
-
-### 1. Context & Goal
-Defend Reality endpoints against active probing and TLS fingerprint classification while enforcing client version boundaries.
-
-### 2. Implementation Details (`reality.go`)
+## Module 3: Anti-Fingerprinting, Version Verification & TLS Record Parsing
 - **Client Version Boundary Checks**:
   - Supported `MinClientVer` and `MaxClientVer` in `RealityConfig`.
   - Reality server parses the 3-byte client version embedded within the `ClientHello` SessionID and verifies it falls within `[MinClientVer, MaxClientVer]`, rejecting out-of-spec probes.
 - **Normalized Version Parsing (`realityValue`)**:
   - Refactored `realityValue` to consistently evaluate version byte slices as `(major << 16) | (minor << 8) | patch` for all input lengths up to 3 bytes.
-  - Eliminates length-dependent bit-shift skew where 1-byte or 2-byte inputs previously miscalculated version integers.
+- **Big-Endian uint16 TLS Record Parsing Fix**:
+  - Parsed 2-byte TLS record version (`s2cSaved[1:3]`) and record length (`s2cSaved[3:5]`) using `binary.BigEndian.Uint16`, preventing length-dependent bit-shift bugs when inspecting TLS records in `RealityServer`.
 
 ---
 
-## Module 3: Master Key Logging Support (`KeyLogWriter`)
-
-### 1. Context & Goal
-Enable safe TLS master secret inspection for Wireshark network troubleshooting without leaking sensitive keys into standard console or application logs.
-
-### 2. Implementation Details (`reality.go`)
-- Exposed and wired the embedded `tls.Config.KeyLogWriter` within `RealityConfig`.
-- Exports TLS master secrets (`CLIENT_RANDOM`) directly to the designated writer during Reality handshakes.
+## Module 4: Chrome 155 & Chrome Root Store Trust Anchors
+- **Chrome 155 (`HelloChrome_155`)**:
+  - Backported fresh macOS capture for Chrome 155.0.8059.40 from `refraction-networking/utls:master`.
+  - Updated `HelloChrome_Auto` to default to `HelloChrome_155`.
+- **Trust Anchors Extension (`u_trust_anchors.go`)**:
+  - Implemented Chrome Root Store trust anchor IDs extension (`0xca34`) advertising 28 certificate identifier hashes matching modern Chromium TLS handshakes.
+  - Registered `trust_anchors` in `dicttls/exttype_values.go` for JSON fingerprint serialization.
 
 ---
 
-## Module 4: Code Quality & Static Analysis Hardening
+## Module 5: Certificate Decompression & Concurrency Hardening
+- **Stream Termination & Trailing Byte Rejection**:
+  - Hardened `decompressCert` with `io.ReadFull` across all codecs.
+  - Validates stream completion and rejects trailing uncompressed/compressed data after certificate stream.
+- **Session Cache Concurrency Safety**:
+  - Shallow-copies `SessionState` immediately after retrieval from `ClientSessionCache` in `loadSession`, preventing data races when multiple goroutines share session entries.
 
-### 1. Implementation Details (`reality.go`, `u_alias.go`, `handshake_test.go`)
+---
+
+## Module 6: Code Quality & Static Analysis Hardening
 - **Control Flow Clarification (`reality.go`)**:
-  - Resolved static analysis rule SA4004 (unconditionally terminated single-iteration loops used for early exit).
-  - Refactored control flow into expressionless `switch` blocks (e.g., `switch { default:` and `switch { case peerPub != nil:`), preserving identical early-break semantics without diagnostic warnings.
-- **Redundant Return Removal (`u_alias.go`)**:
-  - Removed redundant `return` statements from empty stub functions `AddEcdheKeypair` and `AddKemKeypair` (resolving rule S1023).
-- **Scanner Error Inspection (`handshake_test.go`)**:
-  - Added explicit `scanner.Err()` validation following token scanning loops.
-
----
-
-## Module 5: Test Suite & Verification
-
-Unit test coverage is provided in `reality_test.go`:
-- **`TestRealityValue`**: Verifies bit-shifting logic for version parsing across various slice lengths (3-byte, 2-byte, 1-byte, and empty).
-- **`TestRealityMldsa65CertSize`**: Validates certificate byte capacity sizing for ML-DSA-65 signature injection.
-- **`TestRealitySignMldsa65`**: Verifies cryptographic signing at certificate offset 126 using ML-DSA-65 keys and signature generation.
+  - Resolved static analysis rule SA4004 by refactoring single-iteration `for` loops into expressionless `switch` blocks.
+- **Testing Coverage**:
+  - `TestRealityValue`, `TestRealityMldsa65CertSize`, `TestRealitySignMldsa65` in `reality_test.go`.
+  - `TestChrome155CapturedClientHello`, `TestChrome155DefaultFingerprintRoundTrip`, `TestChrome155PresetOwnership`, `TestChrome155SignatureGREASESeed` in `u_chrome155_test.go`.
+  - Full suite in `u_trust_anchors_test.go`.

@@ -25,13 +25,14 @@ type UQUICConn struct {
 //
 // The config's MinVersion must be at least TLS 1.3.
 func UQUICClient(config *QUICConfig, clientHelloID ClientHelloID) *UQUICConn {
-	return newUQUICConn(UClient(nil, config.TLSConfig, clientHelloID))
+	return newUQUICConn(UClient(nil, config.TLSConfig, clientHelloID), config)
 }
 
-func newUQUICConn(uconn *UConn) *UQUICConn {
+func newUQUICConn(uconn *UConn, config *QUICConfig) *UQUICConn {
 	uconn.quic = &quicState{
-		signalc:  make(chan struct{}),
-		blockedc: make(chan struct{}),
+		signalc:             make(chan struct{}),
+		blockedc:            make(chan struct{}),
+		enableSessionEvents: config.EnableSessionEvents,
 	}
 	uconn.quic.events = uconn.quic.eventArr[:0]
 	return &UQUICConn{
@@ -49,7 +50,7 @@ func (q *UQUICConn) Start(ctx context.Context) error {
 	}
 	q.conn.quic.started = true
 	if q.conn.config.MinVersion < VersionTLS13 {
-		return quicError(errors.New("tls: Config MinVersion must be at least TLS 1.13"))
+		return quicError(errors.New("tls: Config MinVersion must be at least TLS 1.3"))
 	}
 	go q.conn.HandshakeContext(ctx)
 	if _, ok := <-q.conn.quic.blockedc; !ok {
@@ -71,6 +72,20 @@ func (q *UQUICConn) NextEvent() QUICEvent {
 		// to catch callers erroniously retaining it.
 		qs.events[last].Data[0] = 0
 	}
+	if qs.nextEvent >= len(qs.events) && qs.waitingForDrain {
+		qs.waitingForDrain = false
+		<-qs.signalc
+		<-qs.blockedc
+	}
+	if err := q.conn.handshakeErr; err != nil {
+		if qs.errorReturned {
+			return QUICEvent{Kind: QUICNoEvent}
+		}
+		qs.errorReturned = true
+		qs.events = nil
+		qs.nextEvent = 0
+		return QUICEvent{Kind: QUICErrorEvent, Err: q.conn.handshakeErr}
+	}
 	if qs.nextEvent >= len(qs.events) {
 		qs.events = qs.events[:0]
 		qs.nextEvent = 0
@@ -84,10 +99,11 @@ func (q *UQUICConn) NextEvent() QUICEvent {
 
 // Close closes the connection and stops any in-progress handshake.
 func (q *UQUICConn) Close() error {
-	if q.conn.quic.cancel == nil {
+	if q.conn.quic.ctx == nil {
 		return nil // never started
 	}
 	q.conn.quic.cancel()
+	<-q.conn.quic.signalc
 	for range q.conn.quic.blockedc {
 		// Wait for the handshake goroutine to return.
 	}
@@ -149,6 +165,24 @@ func (q *UQUICConn) SendSessionTicket(opts QUICSessionTicketOptions) error {
 	}
 	q.sessionTicketSent = true
 	return quicError(c.sendSessionTicket(opts.EarlyData, opts.Extra))
+}
+
+// StoreSession stores a session previously received in a QUICStoreSession event
+// in the ClientSessionCache.
+// The application may process additional events or modify the SessionState
+// before storing the session.
+func (q *UQUICConn) StoreSession(session *SessionState) error {
+	c := q.conn
+	if !c.isClient {
+		return quicError(errors.New("tls: StoreSessionTicket called on the server"))
+	}
+	cacheKey := c.clientSessionCacheKey()
+	if cacheKey == "" {
+		return nil
+	}
+	cs := &ClientSessionState{session: session}
+	c.config.ClientSessionCache.Put(cacheKey, cs)
+	return nil
 }
 
 // ConnectionState returns basic TLS details about the connection.
