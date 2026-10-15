@@ -154,6 +154,9 @@ func (q *UQUICConn) HandleData(level QUICEncryptionLevel, data []byte) error {
 // Currently, it can only be called once.
 func (q *UQUICConn) SendSessionTicket(opts QUICSessionTicketOptions) error {
 	c := q.conn
+	if c.config.SessionTicketsDisabled {
+		return nil
+	}
 	if !c.isHandshakeComplete.Load() {
 		return quicError(errors.New("tls: SendSessionTicket called before handshake completed"))
 	}
@@ -175,6 +178,9 @@ func (q *UQUICConn) StoreSession(session *SessionState) error {
 	c := q.conn
 	if !c.isClient {
 		return quicError(errors.New("tls: StoreSessionTicket called on the server"))
+	}
+	if c.config.SessionTicketsDisabled || c.config.ClientSessionCache == nil {
+		return nil
 	}
 	cacheKey := c.clientSessionCacheKey()
 	if cacheKey == "" {

@@ -122,3 +122,14 @@ This document describes the functional and architectural changes introduced in b
   - Recovered unparsed SPKI public keys from `RawSubjectPublicKeyInfo` via `circlpki.UnmarshalPKIXPublicKey`.
   - Dispatched `signatureMLDSA` directly to `verifyMLDSAHandshakeSignature` with direct signing.
 
+---
+
+## Post-Review Fixes & Design Improvements
+
+1. **`UQUICConn` & `QUICConn` Session Safety and Preset Transport Parameters (`u_quic.go`, `quic.go`)**:
+   - Added `SessionTicketsDisabled` check to `UQUICConn.SendSessionTicket` and nil `ClientSessionCache` / `SessionTicketsDisabled` guards to `UQUICConn.StoreSession` and `QUICConn.StoreSession` to prevent nil-pointer panics.
+   - Restored propagation of `params` to `QUICTransportParametersExtension` in `UQUICConn.SetTransportParameters` when using custom ClientHello presets.
+2. **Hybrid Post-Quantum KeyShare Preset Support (`u_parrots.go`)**:
+   - Extended `classicalCurveForHybrid` and `ApplyPreset` (`KeyShareExtension`) to support `SecP256r1MLKEM768` and `SecP384r1MLKEM1024` alongside `X25519MLKEM768` and `X25519Kyber768Draft00`.
+3. **Wildcard `ServerNames` Matching in `reality.go`**:
+   - Added `matchRealityServerName` supporting exact match, `*`, and single-label wildcard (`*.example.com`) patterns in `utls/reality.go`.

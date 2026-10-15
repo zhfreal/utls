@@ -28,6 +28,10 @@ func classicalCurveForHybrid(curveID CurveID) (CurveID, bool) {
 	switch curveID {
 	case X25519MLKEM768, X25519Kyber768Draft00:
 		return X25519, true
+	case SecP256r1MLKEM768:
+		return CurveP256, true
+	case SecP384r1MLKEM1024:
+		return CurveP384, true
 	default:
 		return 0, false
 	}
@@ -3793,18 +3797,16 @@ func (uconn *UConn) ApplyPreset(p *ClientHelloSpec) error {
 
 				isHybridReuse := len(ext.KeyShares[i].Data) == 1 && ext.KeyShares[i].Data[0] == keyShareHybridReuseMarker
 				isClassicalReuse := len(ext.KeyShares[i].Data) == 1 && ext.KeyShares[i].Data[0] == keyShareClassicalReuseMarker
-				if curveID == X25519MLKEM768 || curveID == X25519Kyber768Draft00 {
+				if curveID == X25519MLKEM768 || curveID == X25519Kyber768Draft00 || curveID == SecP256r1MLKEM768 || curveID == SecP384r1MLKEM1024 {
 					if isClassicalReuse {
 						return fmt.Errorf("hybrid keyshare reuse mismatch: classical marker is invalid for hybrid group %v", curveID)
 					}
-					if isHybridReuse {
-						_, ok := classicalCurveForHybrid(curveID)
-						if !ok {
-							return fmt.Errorf("hybrid keyshare reuse mismatch: hybrid group %v is not supported for reuse", curveID)
-						}
+					classicalCurve, ok := classicalCurveForHybrid(curveID)
+					if !ok {
+						return fmt.Errorf("hybrid keyshare reuse mismatch: hybrid group %v is not supported", curveID)
 					}
 
-					ecdheKey, err := generateECDHEKey(uconn.config.rand(), X25519)
+					ecdheKey, err := generateECDHEKey(uconn.config.rand(), classicalCurve)
 					if err != nil {
 						return err
 					}
@@ -3812,23 +3814,35 @@ func (uconn *UConn) ApplyPreset(p *ClientHelloSpec) error {
 					if _, err := io.ReadFull(uconn.config.rand(), seed); err != nil {
 						return err
 					}
-					mlkemKey, err := mlkem.NewDecapsulationKey768(seed)
-					if err != nil {
-						return err
+					var mlkemKey mlkem.Decapsulator
+					var encapBytes []byte
+					if curveID == SecP384r1MLKEM1024 {
+						dk1024, err := mlkem.NewDecapsulationKey1024(seed)
+						if err != nil {
+							return err
+						}
+						mlkemKey = dk1024
+						encapBytes = dk1024.EncapsulationKey().Bytes()
+					} else {
+						dk768, err := mlkem.NewDecapsulationKey768(seed)
+						if err != nil {
+							return err
+						}
+						mlkemKey = dk768
+						encapBytes = dk768.EncapsulationKey().Bytes()
 					}
 
-					if curveID == X25519Kyber768Draft00 {
-						ext.KeyShares[i].Data = append(ecdheKey.PublicKey().Bytes(), mlkemKey.EncapsulationKey().Bytes()...)
+					if curveID == X25519Kyber768Draft00 || curveID == SecP256r1MLKEM768 || curveID == SecP384r1MLKEM1024 {
+						ext.KeyShares[i].Data = append(ecdheKey.PublicKey().Bytes(), encapBytes...)
 					} else {
-						ext.KeyShares[i].Data = append(mlkemKey.EncapsulationKey().Bytes(), ecdheKey.PublicKey().Bytes()...)
+						ext.KeyShares[i].Data = append(encapBytes, ecdheKey.PublicKey().Bytes()...)
 					}
 					uconn.HandshakeState.State13.KeyShareKeys.Mlkem = mlkemKey
 					uconn.HandshakeState.State13.KeyShareKeys.MlkemEcdhe = ecdheKey
 					uconn.HandshakeState.State13.KeyShareKeys.Keys[curveID] = ecdheKey
 					if isHybridReuse {
-						expectedClassical, _ := classicalCurveForHybrid(curveID)
-						reusableClassicalKeys[expectedClassical] = append(
-							reusableClassicalKeys[expectedClassical],
+						reusableClassicalKeys[classicalCurve] = append(
+							reusableClassicalKeys[classicalCurve],
 							ecdheKey,
 						)
 					}

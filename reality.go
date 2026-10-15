@@ -20,6 +20,7 @@ import (
 	"math/big"
 	"net"
 	"runtime"
+	"strings"
 	"sync"
 	"time"
 
@@ -412,7 +413,7 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 		default:
 			mutex.Lock()
 			hs.clientHello, _, err = hs.c.readClientHello(context.Background()) // TODO: Change some rules in this function.
-			if copying || err != nil || hs.c.vers != VersionTLS13 || !config.ServerNames[hs.clientHello.serverName] {
+			if copying || err != nil || hs.c.vers != VersionTLS13 || !matchRealityServerName(config.ServerNames, hs.clientHello.serverName) {
 				break
 			}
 			var peerPub []byte
@@ -685,4 +686,19 @@ func NewRealityListener(inner net.Listener, config *RealityConfig) net.Listener 
 		}()
 	}
 	return l
+}
+
+func matchRealityServerName(serverNames map[string]bool, sni string) bool {
+	if len(serverNames) == 0 {
+		return false
+	}
+	if serverNames[sni] || serverNames["*"] {
+		return true
+	}
+	if idx := strings.IndexByte(sni, '.'); idx > 0 {
+		if serverNames["*"+sni[idx:]] {
+			return true
+		}
+	}
+	return false
 }

@@ -347,6 +347,9 @@ func (q *QUICConn) StoreSession(session *SessionState) error {
 	if !c.isClient {
 		return quicError(errors.New("tls: StoreSessionTicket called on the server"))
 	}
+	if c.config.SessionTicketsDisabled || c.config.ClientSessionCache == nil {
+		return nil
+	}
 	cacheKey := c.clientSessionCacheKey()
 	if cacheKey == "" {
 		return nil
