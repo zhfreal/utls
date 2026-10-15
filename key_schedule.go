@@ -56,6 +56,7 @@ type keySharePrivateKeys struct {
 
 	mlkemEcdhe *ecdh.PrivateKey // [uTLS] seperate ecdhe key for pq keyshare in line with Chrome, instead of reusing ecdhe key like stdlib
 	keys       map[CurveID]*ecdh.PrivateKey
+	mlkemKeys  map[CurveID]mlkem.Decapsulator
 }
 
 // A keyExchange implements a TLS 1.3 KEM.
@@ -270,13 +271,30 @@ func (ke *hybridKeyExchange) clientSharedSecret(priv *keySharePrivateKeys, serve
 		mlkemShareData = serverKeyShare[ke.ecdhElementSize:]
 	}
 	//[uTLS] SECTION START
-	useSeperateEcdhe := ke.id == X25519Kyber768Draft00 || priv.mlkemEcdhe != nil
-	ecdhSharedSecret, err := ke.ecdh.clientSharedSecretChooseEcdhe(priv, ecdhShareData, useSeperateEcdhe)
+	var ecdhSharedSecret []byte
+	var err error
+	if priv.keys != nil && priv.keys[ke.id] != nil {
+		peerKey, errKey := ke.ecdh.curve.NewPublicKey(ecdhShareData)
+		if errKey != nil {
+			return nil, errKey
+		}
+		ecdhSharedSecret, err = priv.keys[ke.id].ECDH(peerKey)
+	} else {
+		useSeperateEcdhe := ke.id == X25519Kyber768Draft00 || priv.mlkemEcdhe != nil
+		ecdhSharedSecret, err = ke.ecdh.clientSharedSecretChooseEcdhe(priv, ecdhShareData, useSeperateEcdhe)
+	}
 	//[uTLS] SECTION END
 	if err != nil {
 		return nil, err
 	}
-	mlkemSharedSecret, err := priv.mlkem.Decapsulate(mlkemShareData)
+	mlkemDecap := priv.mlkem
+	if priv.mlkemKeys != nil && priv.mlkemKeys[ke.id] != nil {
+		mlkemDecap = priv.mlkemKeys[ke.id]
+	}
+	if mlkemDecap == nil {
+		return nil, errors.New("tls: missing ML-KEM private key")
+	}
+	mlkemSharedSecret, err := mlkemDecap.Decapsulate(mlkemShareData)
 	//[uTLS] SECTION START
 	if ke.id == X25519Kyber768Draft00 {
 		mlkemSharedSecret = kyberSharedSecret(mlkemShareData, mlkemSharedSecret)

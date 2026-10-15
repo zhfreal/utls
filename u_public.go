@@ -915,6 +915,7 @@ type KeySharePrivateKeys struct {
 	Keys       map[CurveID]*ecdh.PrivateKey
 	Mlkem      mlkem.Decapsulator
 	MlkemEcdhe *ecdh.PrivateKey
+	MlkemKeys  map[CurveID]mlkem.Decapsulator
 }
 
 func (ksp *KeySharePrivateKeys) ToPrivate() *keySharePrivateKeys {
@@ -927,6 +928,7 @@ func (ksp *KeySharePrivateKeys) ToPrivate() *keySharePrivateKeys {
 		keys:       ksp.Keys,
 		mlkem:      ksp.Mlkem,
 		mlkemEcdhe: ksp.MlkemEcdhe,
+		mlkemKeys:  ksp.MlkemKeys,
 	}
 }
 
@@ -940,5 +942,6 @@ func (ksp *keySharePrivateKeys) ToPublic() *KeySharePrivateKeys {
 		Keys:       ksp.keys,
 		Mlkem:      ksp.mlkem,
 		MlkemEcdhe: ksp.mlkemEcdhe,
+		MlkemKeys:  ksp.mlkemKeys,
 	}
 }

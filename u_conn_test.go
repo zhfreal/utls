@@ -6,6 +6,7 @@ package tls
 
 import (
 	"bytes"
+	"crypto/x509"
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -247,6 +248,7 @@ func getUTLSTestConfig() *Config {
 		},
 		Rand:               zeroSource{},
 		InsecureSkipVerify: true,
+		VerifyPeerCertificate: func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error { return nil },
 		MinVersion:         VersionSSL30,
 		MaxVersion:         VersionTLS13,
 		CipherSuites:       allCipherSuites(),

@@ -3785,6 +3785,9 @@ func (uconn *UConn) ApplyPreset(p *ClientHelloSpec) error {
 			if uconn.HandshakeState.State13.KeyShareKeys.Keys == nil {
 				uconn.HandshakeState.State13.KeyShareKeys.Keys = make(map[CurveID]*ecdh.PrivateKey)
 			}
+			if uconn.HandshakeState.State13.KeyShareKeys.MlkemKeys == nil {
+				uconn.HandshakeState.State13.KeyShareKeys.MlkemKeys = make(map[CurveID]mlkem.Decapsulator)
+			}
 			for i := range ext.KeyShares {
 				curveID := ext.KeyShares[i].Group
 				if isGREASEUint16(uint16(curveID)) { // just in case the user set a GREASE value instead of unGREASEd
@@ -3840,6 +3843,7 @@ func (uconn *UConn) ApplyPreset(p *ClientHelloSpec) error {
 					uconn.HandshakeState.State13.KeyShareKeys.Mlkem = mlkemKey
 					uconn.HandshakeState.State13.KeyShareKeys.MlkemEcdhe = ecdheKey
 					uconn.HandshakeState.State13.KeyShareKeys.Keys[curveID] = ecdheKey
+					uconn.HandshakeState.State13.KeyShareKeys.MlkemKeys[curveID] = mlkemKey
 					if isHybridReuse {
 						reusableClassicalKeys[classicalCurve] = append(
 							reusableClassicalKeys[classicalCurve],

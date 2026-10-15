@@ -204,14 +204,17 @@ func (q *UQUICConn) SetTransportParameters(params []byte) {
 	if params == nil {
 		params = []byte{}
 	}
-	q.conn.quic.transportParams = params // this won't be used for building ClientHello when using a preset
+	q.conn.quic.transportParams = params
 
-	// // instead, we set the transport parameters hold by the ClientHello
-	// for _, ext := range q.conn.Extensions {
-	// 	if qtp, ok := ext.(*QUICTransportParametersExtension); ok {
-	// 		qtp.TransportParametersExtData = params
-	// 	}
-	// }
+	// Propagate raw transport parameters to any preset QUICTransportParametersExtension
+	// that does not have explicit TransportParameters configured.
+	for _, ext := range q.conn.Extensions {
+		if qtp, ok := ext.(*QUICTransportParametersExtension); ok {
+			if len(qtp.TransportParameters) == 0 {
+				qtp.marshalResult = params
+			}
+		}
+	}
 
 	if q.conn.quic.started {
 		<-q.conn.quic.signalc

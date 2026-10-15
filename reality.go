@@ -19,6 +19,7 @@ import (
 	"io"
 	"math/big"
 	"net"
+	"regexp"
 	"runtime"
 	"strings"
 	"sync"
@@ -665,38 +666,64 @@ func NewRealityListener(inner net.Listener, config *RealityConfig) net.Listener 
 		l.conns = make(chan net.Conn)
 		go func() {
 			for {
-				c, err := l.Listener.Accept()
-				if err != nil {
-					l.err = err
+				rawConn, acceptErr := l.Listener.Accept()
+				if acceptErr != nil {
+					l.err = acceptErr
 					close(l.conns)
 					return
 				}
-				go func() {
+				go func(conn net.Conn) {
+					var tlsConn net.Conn
 					defer func() {
-						if r := recover(); r != nil {
-
+						if r := recover(); r != nil && tlsConn != nil {
+							_ = tlsConn.Close()
 						}
 					}()
-					c, err = RealityServer(context.Background(), c, l.config)
-					if err == nil {
-						l.conns <- c
+					var hsErr error
+					tlsConn, hsErr = RealityServer(context.Background(), conn, l.config)
+					if hsErr == nil {
+						l.conns <- tlsConn
 					}
-				}()
+				}(rawConn)
 			}
 		}()
 	}
 	return l
 }
 
+var realityWildcardRegexCache sync.Map
+
 func matchRealityServerName(serverNames map[string]bool, sni string) bool {
 	if len(serverNames) == 0 {
 		return false
 	}
-	if serverNames[sni] || serverNames["*"] {
+	if serverNames[sni] {
+		return true
+	}
+	if sni == "" {
+		return false
+	}
+	if serverNames["*"] {
 		return true
 	}
 	if idx := strings.IndexByte(sni, '.'); idx > 0 {
 		if serverNames["*"+sni[idx:]] {
+			return true
+		}
+	}
+	for pattern, enabled := range serverNames {
+		if !enabled || !strings.Contains(pattern, "*") || pattern == "*" {
+			continue
+		}
+		reStr := "^" + strings.ReplaceAll(regexp.QuoteMeta(pattern), "\\*", "[^.]+") + "$"
+		var re *regexp.Regexp
+		if val, ok := realityWildcardRegexCache.Load(reStr); ok {
+			re = val.(*regexp.Regexp)
+		} else if compiled, err := regexp.Compile(reStr); err == nil {
+			realityWildcardRegexCache.Store(reStr, compiled)
+			re = compiled
+		}
+		if re != nil && re.MatchString(sni) {
 			return true
 		}
 	}

@@ -133,3 +133,28 @@ This document describes the functional and architectural changes introduced in b
    - Extended `classicalCurveForHybrid` and `ApplyPreset` (`KeyShareExtension`) to support `SecP256r1MLKEM768` and `SecP384r1MLKEM1024` alongside `X25519MLKEM768` and `X25519Kyber768Draft00`.
 3. **Wildcard `ServerNames` Matching in `reality.go`**:
    - Added `matchRealityServerName` supporting exact match, `*`, and single-label wildcard (`*.example.com`) patterns in `utls/reality.go`.
+
+
+---
+
+## 13. Additional Post-Review Bug Fixes & Hardening
+
+1. **QUIC Transport Parameters Propagation to Presets (`u_quic.go`, `u_tls_extensions.go`)**:
+   - Enabled propagation of raw transport parameters in `UQUICConn.SetTransportParameters` and `QUICTransportParametersExtension.writeToUConn` into `qtp.marshalResult` whenever `len(qtp.TransportParameters) == 0`, regardless of whether `SetTransportParameters` is called before or after `ApplyPreset`.
+2. **Multi-Hybrid KeyShare Private Key Lookup (`key_schedule.go`, `u_public.go`, `u_parrots.go`)**:
+   - Added `MlkemKeys map[CurveID]mlkem.Decapsulator` (and `mlkemKeys`) to `KeySharePrivateKeys` / `keySharePrivateKeys` and updated `hybridKeyExchange.clientSharedSecret` to look up `priv.keys[ke.id]` and `priv.mlkemKeys[ke.id]` by the negotiated hybrid `CurveID` before falling back to `MlkemEcdhe` / `Mlkem`.
+3. **Empty SNI Rejection in `matchRealityServerName` (`reality.go`)**:
+   - Updated `matchRealityServerName` so an empty ClientHello SNI (`""`) does not match wildcard `"*"` unless `""` is explicitly enabled in `serverNames`.
+
+
+### 6. Elimination of Unverified `InsecureSkipVerify` (`handshake_client.go`, `u_parrots_test.go`, `u_conn_test.go`, `u_firefox157_test.go`)
+- Updated `verifyServerCertificate` in `handshake_client.go` to reject `InsecureSkipVerify == true` whenever both `VerifyPeerCertificate == nil` and `VerifyConnection == nil` (`tls: InsecureSkipVerify is disabled; must use VerifyPeerCertificate or VerifyConnection to verify peer certificates`), without adding duplicate configuration fields to `utls.Config`.
+- Updated test helpers in `u_parrots_test.go`, `u_conn_test.go`, and `u_firefox157_test.go` to pair `InsecureSkipVerify: true` with explicit `VerifyPeerCertificate` / `VerifyConnection` callbacks.
+
+
+## Five-Round Code Review & Remediation Addendum (2026-10-15)
+
+- **Round 1 (Cryptography, SNI Wildcards & Handshake Concurrency)**:
+  - `reality.go` (`NewRealityListener`): Fixed loop-variable data race on `c, err` in the spawned handshake goroutine and closed `tlsConn` if `l.conns` closes before channel send.
+  - `reality.go` (`matchRealityServerName`): Added `realityWildcardRegexCache` (`sync.Map`) to support non-prefix wildcard patterns (e.g., `api-*.example.com`, `*.sub.*.example.com`) identically to `REALITY/common.go`.
+  - `handshake_client.go`: Enforced peer certificate verification (`InsecureSkipVerify` rejected unless `VerifyPeerCertificate` or `VerifyConnection` is provided).

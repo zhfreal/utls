@@ -106,7 +106,7 @@ func TestFirefox157MatchesCapture(t *testing.T) {
 	}
 
 	pipeR, pipeW := net.Pipe()
-	uconn := UClient(pipeW, &Config{InsecureSkipVerify: true}, HelloFirefox_157)
+	uconn := UClient(pipeW, &Config{InsecureSkipVerify: true, VerifyConnection: func(ConnectionState) error { return nil }}, HelloFirefox_157)
 	go func() {
 		_ = uconn.Handshake()
 		pipeW.Close()
