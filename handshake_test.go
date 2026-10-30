@@ -507,7 +507,9 @@ func testUtlsHandshake(t *testing.T, clientConfig, serverConfig *Config, spec *C
 		}
 		if spec != nil {
 			ucli := UClient(c, clientConfig, HelloCustom)
-			if err = ucli.ApplyPreset(spec); err != nil {
+			if presetErr := ucli.ApplyPreset(spec); presetErr != nil {
+				errChan <- presetErr
+				c.Close()
 				return
 			}
 			cli = ucli

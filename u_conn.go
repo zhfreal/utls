@@ -479,11 +479,19 @@ func (uconn *UConn) ApplyConfig() error {
 }
 
 func (uconn *UConn) extensionsList() []uint16 {
-
-	outerExts := []uint16{}
+	outerExts := make([]uint16, 0, len(uconn.Extensions))
+	var scratch []byte
 	for _, ext := range uconn.Extensions {
-		buffer := cryptobyte.String(make([]byte, 2000))
-		ext.Read(buffer)
+		extLen := ext.Len()
+		if extLen < 4 {
+			extLen = 4
+		}
+		if cap(scratch) < extLen {
+			scratch = make([]byte, extLen)
+		}
+		buf := scratch[:extLen]
+		ext.Read(buf)
+		buffer := cryptobyte.String(buf)
 		var extension uint16
 		buffer.ReadUint16(&extension)
 		outerExts = append(outerExts, extension)
@@ -568,7 +576,9 @@ func (uconn *UConn) MarshalClientHello() error {
 
 		ech.innerHello = inner
 
-		uconn.computeAndUpdateOuterECHExtension(inner, ech, true)
+		if err := uconn.computeAndUpdateOuterECHExtension(inner, ech, true); err != nil {
+			return err
+		}
 
 		uconn.echCtx = ech
 		return nil

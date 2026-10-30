@@ -50,13 +50,14 @@ func NewRoller() (*Roller, error) {
 //    Dial("tcp4", "google.com:443", "google.com")
 //    Dial("tcp", "10.23.144.22:443", "mywebserver.org")
 func (c *Roller) Dial(network, addr, serverName string) (*UConn, error) {
+	c.HelloIDMu.Lock()
 	helloIDs := make([]ClientHelloID, len(c.HelloIDs))
 	copy(helloIDs, c.HelloIDs)
-	c.r.rand.Shuffle(len(c.HelloIDs), func(i, j int) {
+	c.r.randMutex.Lock()
+	c.r.rand.Shuffle(len(helloIDs), func(i, j int) {
 		helloIDs[i], helloIDs[j] = helloIDs[j], helloIDs[i]
 	})
-
-	c.HelloIDMu.Lock()
+	c.r.randMutex.Unlock()
 	workingHelloId := c.WorkingHelloID // keep using same helloID, if it works
 	c.HelloIDMu.Unlock()
 	if workingHelloId != nil {
@@ -88,11 +89,13 @@ func (c *Roller) Dial(network, addr, serverName string) (*UConn, error) {
 		err = client.Handshake()
 		client.SetDeadline(time.Time{}) // unset timeout
 		if err != nil {
+			_ = client.Close()
 			continue // on tls Dial error keep trying HelloIDs
 		}
 
 		c.HelloIDMu.Lock()
-		c.WorkingHelloID = &client.ClientHelloID
+		workingID := client.ClientHelloID
+		c.WorkingHelloID = &workingID
 		c.HelloIDMu.Unlock()
 		return client, err
 	}

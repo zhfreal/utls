@@ -72,7 +72,36 @@ func (c *realityMirrorConn) SetWriteDeadline(t time.Time) error {
 	return nil
 }
 
-const realitySize uint16 = 16384
+const (
+	realitySize uint16 = 16384
+
+	realityIndexServerHello            = 0
+	realityIndexChangeCipherSpec       = 1
+	realityIndexEncryptedExtensions    = 2
+	realityIndexCertificate            = 3
+	realityIndexCertificateVerify      = 4
+	realityIndexFinished               = 5
+	realityIndexNewSessionTicket       = 6
+
+	realityChangeCipherSpecRecordLen   = 6
+	realityChangeCipherSpecPayloadByte = 1
+	realityEncryptedExtensionsMinLen   = 512
+	realityInitialS2CBufCap            = 4096
+	realityAuthKeyHKDFSaltLen          = 20
+	realityAuthKeyLen                  = 32
+	realitySessionIDLen                = 32
+	realityClientTimeOffset            = 4
+	realityClientShortIDOffset         = 8
+	realityX25519KeyLen                = 32
+	realityMldsa65CertSignatureOffset  = 126
+)
+
+var realityServerBufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, realitySize)
+		return &b
+	},
+}
 
 var realityTypes = [7]string{
 	"Server Hello",
@@ -121,22 +150,38 @@ type RealityConfig struct {
 }
 
 func (a *RealityConfig) Clone() *RealityConfig {
+	a.Config.mutex.RLock()
+	defer a.Config.mutex.RUnlock()
+	var serverNames map[string]bool
+	if a.ServerNames != nil {
+		serverNames = make(map[string]bool, len(a.ServerNames))
+		for k, v := range a.ServerNames {
+			serverNames[k] = v
+		}
+	}
+	var shortIds map[[8]byte]bool
+	if a.ShortIds != nil {
+		shortIds = make(map[[8]byte]bool, len(a.ShortIds))
+		for k, v := range a.ShortIds {
+			shortIds[k] = v
+		}
+	}
 	return &RealityConfig{
 		DialContext:           a.DialContext,
 		Log:                   a.Log,
 		Type:                  a.Type,
 		Dest:                  a.Dest,
 		Xver:                  a.Xver,
-		ServerNames:           a.ServerNames,
-		PrivateKey:            a.PrivateKey,
-		MinClientVer:          a.MinClientVer,
-		MaxClientVer:          a.MaxClientVer,
+		ServerNames:           serverNames,
+		PrivateKey:            append([]byte(nil), a.PrivateKey...),
+		MinClientVer:          append([]byte(nil), a.MinClientVer...),
+		MaxClientVer:          append([]byte(nil), a.MaxClientVer...),
 		MaxTimeDiff:           a.MaxTimeDiff,
-		ShortIds:              a.ShortIds,
+		ShortIds:              shortIds,
 		LimitFallbackUpload:   a.LimitFallbackUpload,
 		LimitFallbackDownload: a.LimitFallbackDownload,
-		Mldsa65Verify:         a.Mldsa65Verify,
-		Mldsa65Key:            a.Mldsa65Key,
+		Mldsa65Verify:         append([]byte(nil), a.Mldsa65Verify...),
+		Mldsa65Key:            append([]byte(nil), a.Mldsa65Key...),
 		Config:                *a.Config.Clone(),
 	}
 }
@@ -247,22 +292,43 @@ func (hs *realityServerHandshakeStateTLS13) handshake() error {
 				break
 			}
 		}
+		if peerData == nil {
+			return errors.New("tls: missing peer key share for selected group")
+		}
 
 		var peerPub = peerData
 		if hs.hello.serverShare.group == X25519MLKEM768 {
+			if len(peerData) < mlkem.EncapsulationKeySize768+realityX25519KeyLen {
+				return errors.New("tls: invalid X25519MLKEM768 key share length")
+			}
 			peerPub = peerData[mlkem.EncapsulationKeySize768:]
 		}
 
-		key, _ := generateECDHEKey(c.config.rand(), X25519)
+		key, err := generateECDHEKey(c.config.rand(), X25519)
+		if err != nil {
+			return err
+		}
+		if len(hs.hello.serverShare.data) < realityX25519KeyLen {
+			return errors.New("tls: server share buffer too small")
+		}
 		copy(hs.hello.serverShare.data, key.PublicKey().Bytes())
-		peerKey, _ := key.Curve().NewPublicKey(peerPub)
-		hs.sharedKey, _ = key.ECDH(peerKey)
+		peerKey, err := key.Curve().NewPublicKey(peerPub)
+		if err != nil {
+			return errors.New("tls: invalid peer public key: " + err.Error())
+		}
+		hs.sharedKey, err = key.ECDH(peerKey)
+		if err != nil {
+			return errors.New("tls: ECDH failed: " + err.Error())
+		}
 
 		if hs.hello.serverShare.group == X25519MLKEM768 {
-			k, _ := mlkem.NewEncapsulationKey768(peerData[:mlkem.EncapsulationKeySize768])
+			k, err := mlkem.NewEncapsulationKey768(peerData[:mlkem.EncapsulationKeySize768])
+			if err != nil {
+				return errors.New("tls: invalid ML-KEM-768 key: " + err.Error())
+			}
 			mlkemSharedSecret, ciphertext := k.Encapsulate()
 			hs.sharedKey = append(mlkemSharedSecret, hs.sharedKey...)
-			copy(hs.hello.serverShare.data, append(ciphertext, hs.hello.serverShare.data[:32]...))
+			copy(hs.hello.serverShare.data, append(ciphertext, hs.hello.serverShare.data[:realityX25519KeyLen]...))
 		}
 
 		c.serverName = hs.clientHello.serverName
@@ -293,18 +359,14 @@ func (hs *realityServerHandshakeStateTLS13) handshake() error {
 		if len(config.Mldsa65Key) > 0 {
 			h.Write(hs.clientHello.original)
 			h.Write(hs.hello.original)
-			key, err := mldsa65.Scheme().UnmarshalBinaryPrivateKey(config.Mldsa65Key)
+			privKey, err := loadOrParseRealityMldsa65PrivateKey(config.Mldsa65Key)
 			if err != nil {
 				return err
 			}
-			privKey, ok := key.(*mldsa65.PrivateKey)
-			if !ok {
-				return errors.New("tls: invalid ML-DSA-65 private key type")
-			}
-			if len(signedCert) < 126+mldsa65.SignatureSize {
+			if len(signedCert) < realityMldsa65CertSignatureOffset+mldsa65.SignatureSize {
 				return errors.New("tls: reality server certificate buffer too small for ML-DSA-65 signature")
 			}
-			mldsa65.SignTo(privKey, h.Sum(nil), nil, false, signedCert[126:]) // fixed location
+			mldsa65.SignTo(privKey, h.Sum(nil), nil, false, signedCert[realityMldsa65CertSignatureOffset:]) // fixed location
 		}
 
 		hs.cert = &Certificate{
@@ -373,8 +435,16 @@ func (c *Conn) realityWriteRecord(typ recordType, data []byte) (int, error) {
 // using conn as the underlying transport.
 // The configuration config must be non-nil and must include
 // at least one certificate or else set GetCertificate.
+type realityCloseWriteConn interface {
+	net.Conn
+	CloseWrite() error
+}
+
 func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*Conn, error) {
-	remoteAddr := conn.RemoteAddr().String()
+	var remoteAddr string
+	if conn.RemoteAddr() != nil {
+		remoteAddr = conn.RemoteAddr().String()
+	}
 	if config.Log != nil {
 		config.Log("REALITY remoteAddr: %v", remoteAddr)
 	}
@@ -383,6 +453,10 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 	if err != nil {
 		conn.Close()
 		return nil, errors.New("REALITY: failed to dial dest: " + err.Error())
+	}
+	if target == nil {
+		conn.Close()
+		return nil, errors.New("REALITY: dial dest returned nil conn")
 	}
 
 	underlying := conn
@@ -399,7 +473,7 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 				},
 				config: &config.Config,
 			},
-			ctx: context.Background(),
+			ctx: ctx,
 		},
 		Config: config,
 	}
@@ -413,20 +487,20 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 		switch {
 		default:
 			mutex.Lock()
-			hs.clientHello, _, err = hs.c.readClientHello(context.Background()) // TODO: Change some rules in this function.
+			hs.clientHello, _, err = hs.c.readClientHello(ctx) // TODO: Change some rules in this function.
 			if copying || err != nil || hs.c.vers != VersionTLS13 || !matchRealityServerName(config.ServerNames, hs.clientHello.serverName) {
 				break
 			}
 			var peerPub []byte
 			for _, keyShare := range hs.clientHello.keyShares {
-				if keyShare.group == X25519 && len(keyShare.data) == 32 {
+				if keyShare.group == X25519 && len(keyShare.data) == realityX25519KeyLen {
 					peerPub = keyShare.data
 					break
 				}
 			}
 			if peerPub == nil {
 				for _, keyShare := range hs.clientHello.keyShares {
-					if keyShare.group == X25519MLKEM768 && len(keyShare.data) == mlkem.EncapsulationKeySize768+32 {
+					if keyShare.group == X25519MLKEM768 && len(keyShare.data) == mlkem.EncapsulationKeySize768+realityX25519KeyLen {
 						peerPub = keyShare.data[mlkem.EncapsulationKeySize768:]
 						break
 					}
@@ -437,7 +511,7 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 				if hs.AuthKey, err = curve25519.X25519(config.PrivateKey, peerPub); err != nil {
 					break
 				}
-				if _, err = hkdf.New(sha256.New, hs.AuthKey, hs.clientHello.random[:20], []byte("REALITY")).Read(hs.AuthKey); err != nil {
+				if _, err = hkdf.New(sha256.New, hs.AuthKey, hs.clientHello.random[:realityAuthKeyHKDFSaltLen], []byte("REALITY")).Read(hs.AuthKey); err != nil {
 					break
 				}
 				block, _ := aes.NewCipher(hs.AuthKey)
@@ -445,17 +519,16 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 				if config.Log != nil {
 					config.Log("REALITY remoteAddr: %v hs.c.AuthKey[:16]: %v AEAD: %T", remoteAddr, hs.AuthKey[:16], aead)
 				}
-				ciphertext := make([]byte, 32)
-				plainText := make([]byte, 32)
-				copy(ciphertext, hs.clientHello.sessionId)
-				copy(hs.clientHello.sessionId, plainText) // hs.clientHello.sessionId points to hs.clientHello.raw[39:]
-				if _, err = aead.Open(plainText[:0], hs.clientHello.random[20:], ciphertext, hs.clientHello.original); err != nil {
+				var ciphertext, plainText [realitySessionIDLen]byte
+				copy(ciphertext[:], hs.clientHello.sessionId)
+				copy(hs.clientHello.sessionId, plainText[:]) // hs.clientHello.sessionId points to hs.clientHello.raw[39:]
+				if _, err = aead.Open(plainText[:0], hs.clientHello.random[realityAuthKeyHKDFSaltLen:], ciphertext[:], hs.clientHello.original); err != nil {
 					break
 				}
-				copy(hs.clientHello.sessionId, ciphertext)
-				copy(hs.ClientVer[:], plainText)
-				hs.ClientTime = time.Unix(int64(binary.BigEndian.Uint32(plainText[4:])), 0)
-				copy(hs.ClientShortId[:], plainText[8:])
+				copy(hs.clientHello.sessionId, ciphertext[:])
+				copy(hs.ClientVer[:], plainText[:])
+				hs.ClientTime = time.Unix(int64(binary.BigEndian.Uint32(plainText[realityClientTimeOffset:])), 0)
+				copy(hs.ClientShortId[:], plainText[realityClientShortIDOffset:])
 				if config.Log != nil {
 					config.Log("REALITY remoteAddr: %v hs.c.ClientVer: %v", remoteAddr, hs.ClientVer)
 					config.Log("REALITY remoteAddr: %v hs.c.ClientTime: %v", remoteAddr, hs.ClientTime)
@@ -477,14 +550,23 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 			if config.Log != nil && hs.clientHello != nil {
 				config.Log("REALITY remoteAddr: %v forwarded SNI: %v", remoteAddr, hs.clientHello.serverName)
 			}
-			io.Copy(target, newRateLimitedConn(underlying, &config.LimitFallbackUpload))
+			_, copyErr := io.Copy(target, newRateLimitedConn(underlying, &config.LimitFallbackUpload))
+			if copyErr == nil {
+				if cw, ok := target.(realityCloseWriteConn); ok {
+					_ = cw.CloseWrite()
+				}
+			} else {
+				_ = target.Close()
+			}
 		}
 		waitGroup.Done()
 	}()
 
 	go func() {
-		s2cSaved := make([]byte, 0, realitySize)
-		buf := make([]byte, realitySize)
+		s2cSaved := make([]byte, 0, realityInitialS2CBufCap)
+		bufPtr := realityServerBufPool.Get().(*[]byte)
+		defer realityServerBufPool.Put(bufPtr)
+		buf := *bufPtr
 		handshakeLen := 0
 	f:
 		for {
@@ -511,15 +593,15 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 				if hs.c.out.handshakeLen[i] != 0 {
 					continue
 				}
-				if i == 6 && len(s2cSaved) == 0 {
+				if i == realityIndexNewSessionTicket && len(s2cSaved) == 0 {
 					break
 				}
 				if handshakeLen == 0 && len(s2cSaved) > recordHeaderLen {
 					recVer := int(binary.BigEndian.Uint16(s2cSaved[1:3]))
 					if recVer != VersionTLS12 ||
-						(i == 0 && (recordType(s2cSaved[0]) != recordTypeHandshake || s2cSaved[5] != typeServerHello)) ||
-						(i == 1 && (recordType(s2cSaved[0]) != recordTypeChangeCipherSpec || s2cSaved[5] != 1)) ||
-						(i > 1 && recordType(s2cSaved[0]) != recordTypeApplicationData) {
+						(i == realityIndexServerHello && (recordType(s2cSaved[0]) != recordTypeHandshake || s2cSaved[5] != typeServerHello)) ||
+						(i == realityIndexChangeCipherSpec && (recordType(s2cSaved[0]) != recordTypeChangeCipherSpec || s2cSaved[5] != realityChangeCipherSpecPayloadByte)) ||
+						(i > realityIndexChangeCipherSpec && recordType(s2cSaved[0]) != recordTypeApplicationData) {
 						if config.Log != nil {
 							config.Log("REALITY remoteAddr: %v record %d mismatch: recVer=0x%04x, recType=%x, firstByte=%x", remoteAddr, i, recVer, s2cSaved[0], s2cSaved[5])
 						}
@@ -533,15 +615,15 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 				if handshakeLen > int(realitySize) { // too long
 					break f
 				}
-				if i == 1 && handshakeLen > 0 && handshakeLen != 6 {
+				if i == realityIndexChangeCipherSpec && handshakeLen > 0 && handshakeLen != realityChangeCipherSpecRecordLen {
 					break f
 				}
-				if i == 2 && handshakeLen > 512 {
+				if i == realityIndexEncryptedExtensions && handshakeLen > realityEncryptedExtensionsMinLen {
 					hs.c.out.handshakeLen[i] = uint16(handshakeLen)
-					hs.c.out.handshakeBuf = buf[:0]
+					hs.c.out.handshakeBuf = make([]byte, 0, handshakeLen)
 					break
 				}
-				if i == 6 && handshakeLen > 0 {
+				if i == realityIndexNewSessionTicket && handshakeLen > 0 {
 					hs.c.out.handshakeLen[i] = uint16(handshakeLen)
 					break
 				}
@@ -549,7 +631,7 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 					mutex.Unlock()
 					continue f
 				}
-				if i == 0 {
+				if i == realityIndexServerHello {
 					hs.hello = new(serverHelloMsg)
 					if !hs.hello.unmarshal(s2cSaved[recordHeaderLen:handshakeLen]) ||
 						hs.hello.vers != VersionTLS12 || hs.hello.supportedVersion != VersionTLS13 ||
@@ -571,11 +653,13 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 			if err != nil {
 				break
 			}
-			go func() { // TODO: Probe target's maxUselessRecords and some time-outs in advance.
-				if handshakeLen-len(s2cSaved) > 0 {
-					io.ReadFull(target, buf[:handshakeLen-len(s2cSaved)])
+			rem := handshakeLen - len(s2cSaved)
+			go func(remaining int) { // TODO: Probe target's maxUselessRecords and some time-outs in advance.
+				if remaining > 0 {
+					_, _ = io.CopyN(io.Discard, target, int64(remaining))
 				}
-				if n, err := target.Read(buf); !hs.c.isHandshakeComplete.Load() {
+				var probeBuf [1]byte
+				if n, err := target.Read(probeBuf[:]); !hs.c.isHandshakeComplete.Load() {
 					if err != nil {
 						conn.Close()
 					}
@@ -583,7 +667,7 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 						config.Log("REALITY remoteAddr: %v time.Since(start): %v n: %v err: %v", remoteAddr, time.Since(start), n, err)
 					}
 				}
-			}()
+			}(rem)
 			err = hs.readClientFinished()
 			if config.Log != nil {
 				config.Log("REALITY remoteAddr: %v hs.readClientFinished() err: %v", remoteAddr, err)
@@ -605,6 +689,9 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 			}
 			conn.Write(s2cSaved)
 			io.Copy(underlying, newRateLimitedConn(target, &config.LimitFallbackDownload))
+			if cw, ok := underlying.(realityCloseWriteConn); ok {
+				_ = cw.CloseWrite()
+			}
 		}
 		waitGroup.Done()
 	}()
@@ -630,28 +717,73 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 	*/
 }
 
+var realityMldsa65KeyCache sync.Map
+
+func loadOrParseRealityMldsa65PrivateKey(raw []byte) (*mldsa65.PrivateKey, error) {
+	cacheKey := string(raw)
+	if cached, ok := realityMldsa65KeyCache.Load(cacheKey); ok {
+		return cached.(*mldsa65.PrivateKey), nil
+	}
+	key, err := mldsa65.Scheme().UnmarshalBinaryPrivateKey(raw)
+	if err != nil {
+		return nil, err
+	}
+	privKey, ok := key.(*mldsa65.PrivateKey)
+	if !ok {
+		return nil, errors.New("tls: invalid ML-DSA-65 private key type")
+	}
+	realityMldsa65KeyCache.Store(cacheKey, privKey)
+	return privKey, nil
+}
+
 // A listener implements a network listener (net.Listener) for TLS connections.
 type realityListener struct {
 	net.Listener
-	config *RealityConfig
-	conns  chan net.Conn
-	err    error
+	config    *RealityConfig
+	conns     chan net.Conn
+	done      chan struct{}
+	closeOnce sync.Once
+	errMu     sync.Mutex
+	err       error
 }
 
 // Accept waits for and returns the next incoming TLS connection.
 // The returned connection is of type *Conn.
 func (l *realityListener) Accept() (net.Conn, error) {
-	/*
-		c, err := l.Listener.Accept()
-		if err != nil {
+	select {
+	case c := <-l.conns:
+		return c, nil
+	case <-l.done:
+		select {
+		case c := <-l.conns:
+			return c, nil
+		default:
+			l.errMu.Lock()
+			err := l.err
+			l.errMu.Unlock()
+			if err == nil {
+				err = net.ErrClosed
+			}
 			return nil, err
 		}
-		return Server(c, l.config), nil
-	*/
-	if c, ok := <-l.conns; ok {
-		return c, nil
 	}
-	return nil, l.err
+}
+
+func (l *realityListener) Close() error {
+	err := l.Listener.Close()
+	l.closeOnce.Do(func() {
+		close(l.done)
+	})
+	for {
+		select {
+		case c := <-l.conns:
+			if c != nil {
+				_ = c.Close()
+			}
+		default:
+			return err
+		}
+	}
 }
 
 // NewRealityListener creates a Listener which accepts connections from an inner
@@ -659,35 +791,43 @@ func (l *realityListener) Accept() (net.Conn, error) {
 // The configuration config must be non-nil and must include
 // at least one certificate or else set GetCertificate.
 func NewRealityListener(inner net.Listener, config *RealityConfig) net.Listener {
-	l := new(realityListener)
-	l.Listener = inner
-	l.config = config
-	{
-		l.conns = make(chan net.Conn)
-		go func() {
-			for {
-				rawConn, acceptErr := l.Listener.Accept()
-				if acceptErr != nil {
-					l.err = acceptErr
-					close(l.conns)
-					return
-				}
-				go func(conn net.Conn) {
-					var tlsConn net.Conn
-					defer func() {
-						if r := recover(); r != nil && tlsConn != nil {
-							_ = tlsConn.Close()
-						}
-					}()
-					var hsErr error
-					tlsConn, hsErr = RealityServer(context.Background(), conn, l.config)
-					if hsErr == nil {
-						l.conns <- tlsConn
-					}
-				}(rawConn)
-			}
-		}()
+	l := &realityListener{
+		Listener: inner,
+		config:   config,
+		conns:    make(chan net.Conn),
+		done:     make(chan struct{}),
 	}
+	go func() {
+		for {
+			rawConn, acceptErr := l.Listener.Accept()
+			if acceptErr != nil {
+				l.errMu.Lock()
+				l.err = acceptErr
+				l.errMu.Unlock()
+				l.closeOnce.Do(func() {
+					close(l.done)
+				})
+				return
+			}
+			go func(conn net.Conn) {
+				var tlsConn net.Conn
+				defer func() {
+					if r := recover(); r != nil && tlsConn != nil {
+						_ = tlsConn.Close()
+					}
+				}()
+				var hsErr error
+				tlsConn, hsErr = RealityServer(context.Background(), conn, l.config)
+				if hsErr == nil {
+					select {
+					case l.conns <- tlsConn:
+					case <-l.done:
+						_ = tlsConn.Close()
+					}
+				}
+			}(rawConn)
+		}
+	}()
 	return l
 }
 

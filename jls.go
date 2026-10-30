@@ -139,17 +139,19 @@ func jlsBuildFakeRandom(user JLSUser, random16, authData []byte, random io.Reade
 	if len(random16) != jlsRandomSeedLen {
 		return nil, errors.New("tls: jls random seed must be 16 bytes")
 	}
-	nonceHash := sha256.New()
-	nonceHash.Write([]byte(user.Username))
-	nonceHash.Write(authData)
-	nonce := nonceHash.Sum(nil)
+	h := sha256.New()
+	_, _ = io.WriteString(h, user.Username)
+	h.Write(authData)
+	var nonce [sha256.Size]byte
+	h.Sum(nonce[:0])
 
-	keyHash := sha256.New()
-	keyHash.Write([]byte(user.Password))
-	keyHash.Write(authData)
-	key := keyHash.Sum(nil)
+	h.Reset()
+	_, _ = io.WriteString(h, user.Password)
+	h.Write(authData)
+	var key [sha256.Size]byte
+	h.Sum(key[:0])
 
-	block, err := aes.NewCipher(key)
+	block, err := aes.NewCipher(key[:])
 	if err != nil {
 		return nil, err
 	}
@@ -161,7 +163,7 @@ func jlsBuildFakeRandom(user JLSUser, random16, authData []byte, random io.Reade
 	// JLS v3 reserves the TLS downgrade canaries and the HRR random suffix.
 	// Regenerate N instead of emitting a FakeRandom ending in one of them.
 	for {
-		fakeRandom := aead.Seal(nil, nonce, seed, nil)
+		fakeRandom := aead.Seal(nil, nonce[:], seed, nil)
 		if !jlsHasForbiddenRandomSuffix(fakeRandom) {
 			return fakeRandom, nil
 		}
@@ -186,17 +188,19 @@ func jlsCheckFakeRandom(user JLSUser, fakeRandom, authData []byte) bool {
 	if len(fakeRandom) != jlsHelloRandomLen {
 		return false
 	}
-	nonceHash := sha256.New()
-	nonceHash.Write([]byte(user.Username))
-	nonceHash.Write(authData)
-	nonce := nonceHash.Sum(nil)
+	h := sha256.New()
+	_, _ = io.WriteString(h, user.Username)
+	h.Write(authData)
+	var nonce [sha256.Size]byte
+	h.Sum(nonce[:0])
 
-	keyHash := sha256.New()
-	keyHash.Write([]byte(user.Password))
-	keyHash.Write(authData)
-	key := keyHash.Sum(nil)
+	h.Reset()
+	_, _ = io.WriteString(h, user.Password)
+	h.Write(authData)
+	var key [sha256.Size]byte
+	h.Sum(key[:0])
 
-	block, err := aes.NewCipher(key)
+	block, err := aes.NewCipher(key[:])
 	if err != nil {
 		return false
 	}
@@ -204,7 +208,8 @@ func jlsCheckFakeRandom(user JLSUser, fakeRandom, authData []byte) bool {
 	if err != nil {
 		return false
 	}
-	plain, err := aead.Open(nil, nonce, fakeRandom, nil)
+	var plainBuf [jlsRandomSeedLen]byte
+	plain, err := aead.Open(plainBuf[:0], nonce[:], fakeRandom, nil)
 	return err == nil && len(plain) == jlsRandomSeedLen
 }
 
