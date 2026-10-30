@@ -385,7 +385,7 @@ func (hs *realityServerHandshakeStateTLS13) handshake() error {
 	if err := hs.sendServerFinished(); err != nil {
 		return err
 	}
-	if hs.c.out.handshakeLen[6] != 0 {
+	if hs.c.out.handshakeLen[realityIndexNewSessionTicket] != 0 {
 		if _, err := c.realityWriteRecord(recordTypeHandshake, []byte{typeNewSessionTicket}); err != nil {
 			return err
 		}
@@ -636,8 +636,8 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 					if !hs.hello.unmarshal(s2cSaved[recordHeaderLen:handshakeLen]) ||
 						hs.hello.vers != VersionTLS12 || hs.hello.supportedVersion != VersionTLS13 ||
 						cipherSuiteTLS13ByID(hs.hello.cipherSuite) == nil ||
-						(!(hs.hello.serverShare.group == X25519 && len(hs.hello.serverShare.data) == 32) &&
-							!(hs.hello.serverShare.group == X25519MLKEM768 && len(hs.hello.serverShare.data) == mlkem.CiphertextSize768+32)) {
+						(!(hs.hello.serverShare.group == X25519 && len(hs.hello.serverShare.data) == realityX25519KeyLen) &&
+							!(hs.hello.serverShare.group == X25519MLKEM768 && len(hs.hello.serverShare.data) == mlkem.CiphertextSize768+realityX25519KeyLen)) {
 						break f
 					}
 				}
@@ -679,7 +679,7 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 			break
 		}
 		mutex.Unlock()
-		if hs.c.out.handshakeLen[0] == 0 { // if the target sent an incorrect Server Hello, or before that
+		if hs.c.out.handshakeLen[realityIndexServerHello] == 0 { // if the target sent an incorrect Server Hello, or before that
 			if hs.c.conn == conn { // if we processed the Client Hello successfully but the target did not
 				waitGroup.Add(1)
 				go func() {
