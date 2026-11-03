@@ -38,9 +38,10 @@ The modifications are structured into two distinct categories:
 * **Embedded REALITY Protocol Engine**:
   - Integrated server-side REALITY negotiation and listener infrastructure (`RealityConfig`, `NewRealityListener`).
   - Supported exact match, single-label wildcard (`*.example.com`), and catch-all (`*`), backed by `realityWildcardRegexCache` (`sync.Map`).
-  - Cached parsed ML-DSA-65 private keys in `realityMldsa65KeyCache` (`sync.Map`) via `loadOrParseRealityMldsa65PrivateKey` to eliminate per-handshake key unmarshaling.
-* **Half-Close Fallback Handling**:
+  - Cached parsed ML-DSA-65 private keys in `realityMldsa65KeyCache` (`sync.Map`) keyed by stack-allocated SHA-256 digests (`[32]byte`) via `loadOrParseRealityMldsa65PrivateKey` to eliminate per-handshake key unmarshaling and eliminate 4KB string heap allocations.
+* **Half-Close Fallback Handling & Stalled Session Teardown**:
   - Added `CloseWrite()` / `target.Close()` handling on fallback upload and download completion matching REALITY core specifications.
+  - Implemented a 5-second read deadline grace period on fallback download completion, ensuring hung half-closed client sockets terminate cleanly and preventing indefinite goroutine and socket leaks.
 
 ### 2.4 Multi-Hybrid KeyShare Private Key Routing (`key_schedule.go`, `u_public.go`)
 * **Multi-Curve Routing**:
@@ -127,7 +128,7 @@ The modifications are structured into two distinct categories:
 | `mldsa.go` | **Added** | **Type 1** (New Feature) | ML-DSA algorithm constants and SPKI public key recovery interfaces. |
 | `mldsa_circl.go` | **Added** | **Type 1** (New Feature) | CIRCL-based ML-DSA signature verification and public key unmarshaling. |
 | `mldsa_test.go` | **Added** | Testing | Unit tests for ML-DSA-44, ML-DSA-65, and ML-DSA-87 signature verification and SPKI recovery. |
-| `reality.go` | **Modified** | **Type 1** & **Type 2** | Type 1: Embedded REALITY engine, wildcard SNI, `realityMldsa65KeyCache`, safe `CloseWrite`.<br>Type 2: Deep config cloning (`concurrent map read and write` fix), `done` channel listener panic elimination, unaliased `handshakeBuf`, stack arrays, `realityServerBufPool` 16KB scratch buffer pooling, caller `ctx` propagation in `RealityServer`, named protocol constants eliminating magic numbers in comparisons (`realityIndexNewSessionTicket`, `realityIndexServerHello`, `realityX25519KeyLen`, etc.). |
+| `reality.go` | **Modified** | **Type 1** & **Type 2** | Type 1: Embedded REALITY engine, wildcard SNI, `realityMldsa65KeyCache`, safe `CloseWrite`.<br>Type 2: Deep config cloning (`concurrent map read and write` fix), `done` channel listener panic elimination, unaliased `handshakeBuf`, stack arrays, zero-alloc SHA-256 key cache lookup, fallback read deadline teardown preventing stalled socket/goroutine leaks, `realityServerBufPool` 16KB scratch buffer pooling, caller `ctx` propagation in `RealityServer`, named protocol constants eliminating magic numbers in comparisons (`realityIndexNewSessionTicket`, `realityIndexServerHello`, `realityX25519KeyLen`, etc.). |
 | `patch_reality_server.go` | **Added** | **Type 1** & **Type 2** | Type 1: Lazy initialization of REALITY ML-DSA-65 synthesized server certificate (`realityServerCertMldsa65`).<br>Type 2: Named constants `realityMldsa65CertPaddingLen` and `ed25519.PublicKeySize` eliminating magic literals. |
 | `reality_test.go` | **Added** | Testing | Unit tests for REALITY value decoding, ML-DSA certificate sizing, and signature generation. |
 | `u_prng.go` | **Modified** | **Type 2** (Bugfix) | Thread-safe `randMutex` protecting `math/rand.Rand` across all random generation methods. |

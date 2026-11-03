@@ -683,15 +683,23 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 			if hs.c.conn == conn { // if we processed the Client Hello successfully but the target did not
 				waitGroup.Add(1)
 				go func() {
-					io.Copy(target, newRateLimitedConn(underlying, &config.LimitFallbackUpload))
-					waitGroup.Done()
+					defer waitGroup.Done()
+					_, copyErr := io.Copy(target, newRateLimitedConn(underlying, &config.LimitFallbackUpload))
+					if copyErr == nil {
+						if cw, ok := target.(realityCloseWriteConn); ok {
+							_ = cw.CloseWrite()
+						}
+					} else {
+						_ = target.Close()
+					}
 				}()
 			}
-			conn.Write(s2cSaved)
-			io.Copy(underlying, newRateLimitedConn(target, &config.LimitFallbackDownload))
+			_, _ = conn.Write(s2cSaved)
+			_, _ = io.Copy(underlying, newRateLimitedConn(target, &config.LimitFallbackDownload))
 			if cw, ok := underlying.(realityCloseWriteConn); ok {
 				_ = cw.CloseWrite()
 			}
+			_ = underlying.SetReadDeadline(time.Now().Add(5 * time.Second))
 		}
 		waitGroup.Done()
 	}()
@@ -720,7 +728,7 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 var realityMldsa65KeyCache sync.Map
 
 func loadOrParseRealityMldsa65PrivateKey(raw []byte) (*mldsa65.PrivateKey, error) {
-	cacheKey := string(raw)
+	cacheKey := sha256.Sum256(raw)
 	if cached, ok := realityMldsa65KeyCache.Load(cacheKey); ok {
 		return cached.(*mldsa65.PrivateKey), nil
 	}
