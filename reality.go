@@ -820,8 +820,12 @@ func NewRealityListener(inner net.Listener, config *RealityConfig) net.Listener 
 			go func(conn net.Conn) {
 				var tlsConn net.Conn
 				defer func() {
-					if r := recover(); r != nil && tlsConn != nil {
-						_ = tlsConn.Close()
+					if r := recover(); r != nil {
+						if tlsConn != nil {
+							_ = tlsConn.Close()
+						} else {
+							_ = conn.Close()
+						}
 					}
 				}()
 				var hsErr error

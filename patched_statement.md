@@ -60,10 +60,11 @@ The modifications are structured into two distinct categories:
   - Added guards for nil `peerData`, slice bounds validation for `X25519MLKEM768`, nil checks on `peerKey` and `k`, and proper error handling for `generateECDHEKey`, `NewPublicKey`, `key.ECDH`, and `mlkem.NewEncapsulationKey768`, eliminating potential panics on invalid key shares.
   - Added defensive check `if target == nil` after `config.DialContext` in `RealityServer()`, preventing nil pointer panics on custom dialers.
 
-### 3.2 REALITY Listener Panic Elimination on Shutdown (`reality.go`)
-* **Elimination of `panic: send on closed channel`**:
+### 3.2 REALITY Listener Panic Elimination on Shutdown & Defensive Socket Teardown (`reality.go`)
+* **Elimination of `panic: send on closed channel` & Descriptor Leaks**:
   - In upstream, `listener.Accept()` closed channels on the first error. Concurrent background handshake worker goroutines executing `l.conns <- tlsConn` then panicked with unrecoverable `send on closed channel`.
   - Replaced raw channel closure with a `done chan struct{}` closed once via `closeOnce sync.Once`. Handshake workers now select on `case l.conns <- tlsConn: case <-l.done: _ = tlsConn.Close()`.
+  - Added defensive `recover()` teardown closing `conn` if a panic occurs before `tlsConn` assignment, preventing socket descriptor leaks on abrupt worker termination.
 
 ### 3.3 Handshake Memory Aliasing & Buffer Corruption Elimination (`reality.go`)
 * **Dedicated Handshake Backing Buffer**:
