@@ -334,7 +334,9 @@ func (c *UConn) handshakeContext(ctx context.Context) (ret error) {
 	} else if ctx.Done() != nil {
 		// Close the connection if ctx is canceled before the function returns.
 		stop := contextAfterFunc(ctx, func() {
-			_ = c.conn.Close()
+			if c != nil && c.Conn != nil && c.conn != nil {
+				_ = c.conn.Close()
+			}
 		})
 		defer func() {
 			if !stop() {

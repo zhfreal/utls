@@ -15,6 +15,13 @@ type Roller struct {
 	r                   *prng
 }
 
+const (
+	RollerMinTcpDialTimeoutSecs        = 7
+	RollerRandomTcpDialTimeoutSpanSecs = 14
+	RollerMinTlsHandshakeTimeoutSecs   = 11
+	RollerRandomTlsHandshakeSpanSecs   = 20
+)
+
 // NewRoller creates Roller object with default range of HelloIDs to cycle through until a
 // working/unblocked one is found.
 func NewRoller() (*Roller, error) {
@@ -23,11 +30,11 @@ func NewRoller() (*Roller, error) {
 		return nil, err
 	}
 
-	tcpDialTimeoutInc := r.Intn(14)
-	tcpDialTimeoutInc = 7 + tcpDialTimeoutInc
+	tcpDialTimeoutInc := r.Intn(RollerRandomTcpDialTimeoutSpanSecs)
+	tcpDialTimeoutInc = RollerMinTcpDialTimeoutSecs + tcpDialTimeoutInc
 
-	tlsHandshakeTimeoutInc := r.Intn(20)
-	tlsHandshakeTimeoutInc = 11 + tlsHandshakeTimeoutInc
+	tlsHandshakeTimeoutInc := r.Intn(RollerRandomTlsHandshakeSpanSecs)
+	tlsHandshakeTimeoutInc = RollerMinTlsHandshakeTimeoutSecs + tlsHandshakeTimeoutInc
 
 	return &Roller{
 		HelloIDs: []ClientHelloID{

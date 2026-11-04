@@ -94,11 +94,28 @@ const (
 	realityClientShortIDOffset         = 8
 	realityX25519KeyLen                = 32
 	realityMldsa65CertSignatureOffset  = 126
+	realityDefaultHandshakeTimeout     = 10 * time.Second
+	realityFallbackReadDeadline        = 5 * time.Second
+
+	realityClientVerLen   = 3
+	realityShortIDLen     = 8
+	realityProbeBufLen    = 1
+	realityRecordVerStart = 1
+	realityRecordVerEnd   = 3
+	realityRecordLenStart = 3
+	realityRecordLenEnd   = 5
 )
 
 var realityServerBufPool = sync.Pool{
 	New: func() any {
 		b := make([]byte, realitySize)
+		return &b
+	},
+}
+
+var realityS2CBufPool = sync.Pool{
+	New: func() any {
+		b := make([]byte, 0, realityInitialS2CBufCap)
 		return &b
 	},
 }
@@ -114,7 +131,7 @@ var realityTypes = [7]string{
 }
 
 func realityValue(vals ...byte) (value int) {
-	for i := 0; i < len(vals) && i < 3; i++ {
+	for i := 0; i < len(vals) && i < realityClientVerLen; i++ {
 		value |= int(vals[i]) << ((2 - i) * 8)
 	}
 	return
@@ -139,12 +156,15 @@ type RealityConfig struct {
 	MinClientVer []byte
 	MaxClientVer []byte
 	MaxTimeDiff  time.Duration
-	ShortIds     map[[8]byte]bool
+	ShortIds     map[[realityShortIDLen]byte]bool
 
 	LimitFallbackUpload   RealityLimitFallback
 	LimitFallbackDownload RealityLimitFallback
 	Mldsa65Verify         []byte
 	Mldsa65Key            []byte
+
+	HandshakeTimeout     time.Duration
+	FallbackReadDeadline time.Duration
 
 	Config
 }
@@ -159,9 +179,9 @@ func (a *RealityConfig) Clone() *RealityConfig {
 			serverNames[k] = v
 		}
 	}
-	var shortIds map[[8]byte]bool
+	var shortIds map[[realityShortIDLen]byte]bool
 	if a.ShortIds != nil {
-		shortIds = make(map[[8]byte]bool, len(a.ShortIds))
+		shortIds = make(map[[realityShortIDLen]byte]bool, len(a.ShortIds))
 		for k, v := range a.ShortIds {
 			shortIds[k] = v
 		}
@@ -182,6 +202,8 @@ func (a *RealityConfig) Clone() *RealityConfig {
 		LimitFallbackDownload: a.LimitFallbackDownload,
 		Mldsa65Verify:         append([]byte(nil), a.Mldsa65Verify...),
 		Mldsa65Key:            append([]byte(nil), a.Mldsa65Key...),
+		HandshakeTimeout:      a.HandshakeTimeout,
+		FallbackReadDeadline:  a.FallbackReadDeadline,
 		Config:                *a.Config.Clone(),
 	}
 }
@@ -252,7 +274,7 @@ func onceValues[T1, T2 any](f func() (T1, T2)) func() (T1, T2) {
 var realityServerCert = onceValues(func() (ed25519Priv ed25519.PrivateKey, signedCert []byte) {
 	certificate := x509.Certificate{SerialNumber: &big.Int{}}
 	_, ed25519Priv, _ = ed25519.GenerateKey(rand.Reader)
-	signedCert, _ = x509.CreateCertificate(rand.Reader, &certificate, &certificate, ed25519.PublicKey(ed25519Priv[32:]), ed25519Priv)
+	signedCert, _ = x509.CreateCertificate(rand.Reader, &certificate, &certificate, ed25519.PublicKey(ed25519Priv[ed25519.PublicKeySize:]), ed25519Priv)
 	return
 })
 
@@ -260,9 +282,9 @@ type realityServerHandshakeStateTLS13 struct {
 	serverHandshakeStateTLS13
 
 	AuthKey       []byte
-	ClientVer     [3]byte
+	ClientVer     [realityClientVerLen]byte
 	ClientTime    time.Time
-	ClientShortId [8]byte
+	ClientShortId [realityShortIDLen]byte
 	Config        *RealityConfig
 }
 
@@ -328,7 +350,8 @@ func (hs *realityServerHandshakeStateTLS13) handshake() error {
 			}
 			mlkemSharedSecret, ciphertext := k.Encapsulate()
 			hs.sharedKey = append(mlkemSharedSecret, hs.sharedKey...)
-			copy(hs.hello.serverShare.data, append(ciphertext, hs.hello.serverShare.data[:realityX25519KeyLen]...))
+			copy(hs.hello.serverShare.data[:mlkem.CiphertextSize768], ciphertext)
+			copy(hs.hello.serverShare.data[mlkem.CiphertextSize768:], key.PublicKey().Bytes())
 		}
 
 		c.serverName = hs.clientHello.serverName
@@ -353,8 +376,8 @@ func (hs *realityServerHandshakeStateTLS13) handshake() error {
 		}
 
 		h := hmac.New(sha512.New, hs.AuthKey)
-		h.Write(ed25519Priv[32:])
-		h.Sum(signedCert[:len(signedCert)-64])
+		h.Write(ed25519Priv[ed25519.PublicKeySize:])
+		h.Sum(signedCert[:len(signedCert)-ed25519.SignatureSize])
 
 		if len(config.Mldsa65Key) > 0 {
 			h.Write(hs.clientHello.original)
@@ -459,6 +482,36 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 		return nil, errors.New("REALITY: dial dest returned nil conn")
 	}
 
+	if ctx != nil && ctx.Done() != nil {
+		stop := context.AfterFunc(ctx, func() {
+			_ = target.Close()
+			_ = conn.Close()
+		})
+		defer stop()
+	}
+
+	handshakeTimeout := realityDefaultHandshakeTimeout
+	if config.HandshakeTimeout > 0 {
+		handshakeTimeout = config.HandshakeTimeout
+	}
+	fallbackReadDeadline := realityFallbackReadDeadline
+	if config.FallbackReadDeadline > 0 {
+		fallbackReadDeadline = config.FallbackReadDeadline
+	}
+
+	if ctx != nil {
+		if dl, ok := ctx.Deadline(); ok {
+			_ = conn.SetDeadline(dl)
+			_ = target.SetDeadline(dl)
+		} else {
+			_ = conn.SetDeadline(time.Now().Add(handshakeTimeout))
+			_ = target.SetDeadline(time.Now().Add(handshakeTimeout))
+		}
+	} else {
+		_ = conn.SetDeadline(time.Now().Add(handshakeTimeout))
+		_ = target.SetDeadline(time.Now().Add(handshakeTimeout))
+	}
+
 	underlying := conn
 
 	mutex := new(sync.Mutex)
@@ -547,6 +600,8 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 		}
 		mutex.Unlock()
 		if hs.c.conn != conn {
+			_ = underlying.SetDeadline(time.Time{})
+			_ = target.SetDeadline(time.Time{})
 			if config.Log != nil && hs.clientHello != nil {
 				config.Log("REALITY remoteAddr: %v forwarded SNI: %v", remoteAddr, hs.clientHello.serverName)
 			}
@@ -563,7 +618,14 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 	}()
 
 	go func() {
-		s2cSaved := make([]byte, 0, realityInitialS2CBufCap)
+		s2cBufPtr := realityS2CBufPool.Get().(*[]byte)
+		s2cSaved := (*s2cBufPtr)[:0]
+		defer func() {
+			if cap(s2cSaved) <= int(realitySize) {
+				s2cSaved = s2cSaved[:0]
+				realityS2CBufPool.Put(&s2cSaved)
+			}
+		}()
 		bufPtr := realityServerBufPool.Get().(*[]byte)
 		defer realityServerBufPool.Put(bufPtr)
 		buf := *bufPtr
@@ -597,7 +659,7 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 					break
 				}
 				if handshakeLen == 0 && len(s2cSaved) > recordHeaderLen {
-					recVer := int(binary.BigEndian.Uint16(s2cSaved[1:3]))
+					recVer := int(binary.BigEndian.Uint16(s2cSaved[realityRecordVerStart:realityRecordVerEnd]))
 					if recVer != VersionTLS12 ||
 						(i == realityIndexServerHello && (recordType(s2cSaved[0]) != recordTypeHandshake || s2cSaved[5] != typeServerHello)) ||
 						(i == realityIndexChangeCipherSpec && (recordType(s2cSaved[0]) != recordTypeChangeCipherSpec || s2cSaved[5] != realityChangeCipherSpecPayloadByte)) ||
@@ -607,7 +669,7 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 						}
 						break f
 					}
-					handshakeLen = recordHeaderLen + int(binary.BigEndian.Uint16(s2cSaved[3:5]))
+					handshakeLen = recordHeaderLen + int(binary.BigEndian.Uint16(s2cSaved[realityRecordLenStart:realityRecordLenEnd]))
 				}
 				if config.Log != nil {
 					config.Log("REALITY remoteAddr: %v len(s2cSaved): %v %v: %v", remoteAddr, len(s2cSaved), t, handshakeLen)
@@ -658,7 +720,7 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 				if remaining > 0 {
 					_, _ = io.CopyN(io.Discard, target, int64(remaining))
 				}
-				var probeBuf [1]byte
+				var probeBuf [realityProbeBufLen]byte
 				if n, err := target.Read(probeBuf[:]); !hs.c.isHandshakeComplete.Load() {
 					if err != nil {
 						conn.Close()
@@ -680,6 +742,8 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 		}
 		mutex.Unlock()
 		if hs.c.out.handshakeLen[realityIndexServerHello] == 0 { // if the target sent an incorrect Server Hello, or before that
+			_ = underlying.SetDeadline(time.Time{})
+			_ = target.SetDeadline(time.Time{})
 			if hs.c.conn == conn { // if we processed the Client Hello successfully but the target did not
 				waitGroup.Add(1)
 				go func() {
@@ -699,7 +763,7 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 			if cw, ok := underlying.(realityCloseWriteConn); ok {
 				_ = cw.CloseWrite()
 			}
-			_ = underlying.SetReadDeadline(time.Now().Add(5 * time.Second))
+			_ = underlying.SetReadDeadline(time.Now().Add(fallbackReadDeadline))
 		}
 		waitGroup.Done()
 	}()
@@ -710,6 +774,7 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 		config.Log("REALITY remoteAddr: %v hs.c.isHandshakeComplete.Load(): %v", remoteAddr, hs.c.isHandshakeComplete.Load())
 	}
 	if hs.c.isHandshakeComplete.Load() {
+		_ = conn.SetDeadline(time.Time{})
 		return hs.c, nil
 	}
 	conn.Close()
