@@ -1,6 +1,6 @@
 # Codebase Change Statement: utls
 
-**Current Codebase:** `zhfreal/utls` (`main-patched`)  
+**Current Codebase:** `zhfreal/utls` (`main-patched`, Tag: `v1.9.0-patch11` / `v1.9.0+patch11`)  
 **Original Upstream Baseline:** `MetaCubeX/utls` (Branch `v1.9.0-mod-meta`, Git Commit `a6a364afbd13015e2d6da7d55f8ad4123f9fc0b9`)  
 **Repository Location:** `./utls-mine` (symlinked to `/home/robin/Source/clash/clash.meta/utls-mine`)  
 **Status:** Production-Ready, Race-Verified (`go test -race ./...` passing 100%)
