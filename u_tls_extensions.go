@@ -994,6 +994,9 @@ func GetBoringGREASEValue(greaseSeed [ssl_grease_last_index]uint16, index int) u
 func getBoringGREASEValue(greaseSeed []uint16, index int) uint16 {
 	// GREASE value is back from deterministic to random.
 	// https://github.com/google/boringssl/blob/a365138ac60f38b64bfc608b493e0f879845cb88/ssl/handshake_client.c#L530
+	if index < 0 || index >= len(greaseSeed) {
+		return 0x0a0a
+	}
 	ret := uint16(greaseSeed[index])
 	/* This generates a random value of the form 0xωaωa, for all 0 ≤ ω < 16. */
 	ret = (ret & 0xf0) | 0x0a

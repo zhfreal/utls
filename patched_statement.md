@@ -13,11 +13,13 @@ This document specifies the complete architectural, cryptographic, and performan
 
 The modifications are structured into two distinct categories:
 1. **Type 1: New Features & Cryptographic Extensions**: Live browser ClientHello fingerprint parrots (Opera 136, Chrome 155, Firefox 157), end-to-end post-quantum ML-DSA signature verification with direct SPKI public key extraction, embedded server-side REALITY negotiation engine, and multi-hybrid keyshare routing.
+
+- **Named Default Constants for All Tunable Parameters (`u_common.go`, `u_conn.go`, `u_fingerprinter.go`, `u_session_controller.go`)**: Formalized all added and modified buffer sizes, slice lengths, cache limits, and extension capacities (`DefaultSessionTicketMaxBytes`, `DefaultFingerprinterMaxAlpnLen`, `DefaultInitialKeyShareCap`, `DefaultClientHelloPadAlign`, `DefaultPSKIdentitiesCap`, `DefaultCipherSuitesCap`) as named `const` default definitions with zero inline magic numbers.
 2. **Type 2: Bug Fixes, Concurrency & Memory Safety Remediations**: Elimination of concurrent map read/write crashes via deep configuration cloning, listener panic elimination on shutdown (`send on closed channel`), handshake memory aliasing fixes, thread-safe PRNG synchronization protecting LFSR state, TCP socket leak elimination on handshake failure, and hot-path zero-allocation refactoring.
 
 ---
 
-## 2. Type 1: New Features & Cryptographic Extensions
+## 2. New Features
 
 ### 2.1 Modern Browser Fingerprint Parrots (`u_parrots.go`, `u_opera136.go`, `u_chrome155.go`)
 * **Opera 136 Live Profile (`HelloOpera_136`)**:
@@ -50,7 +52,7 @@ The modifications are structured into two distinct categories:
 
 ---
 
-## 3. Type 2: Bug Fixes, Concurrency & Memory Safety Remediations
+## 3. Bugfixes
 
 ### 3.1 REALITY Concurrent Map Read/Write & Key Share Bounds Remediations (`reality.go`)
 * **Deep Configuration Cloning (`RealityConfig.Clone`)**:
@@ -111,10 +113,37 @@ The modifications are structured into two distinct categories:
 * **Context Propagation & Handshake Cancellation**:
   - Wired caller-provided `ctx context.Context` into `hs.ctx` and `readClientHello(ctx)` rather than discarding it with `context.Background()`, ensuring caller cancellation and deadlines abort pending handshakes promptly.
 
+### 3.11 Server Share Bounds Guard, Listener Handshake Cancellation, Stack GREASE Seed Allocation & Test Singleton Isolation (`reality.go`, `reality_test.go`, `u_parrots.go`, `u_tls_extensions.go`)
+* **Bounds Validation on `X25519MLKEM768` Server Key Share (`reality.go`)**:
+  - Verified `len(hs.hello.serverShare.data) >= mlkem.CiphertextSize768+realityX25519KeyLen` before copying the ML-KEM-768 ciphertext and X25519 public key into `hs.hello.serverShare.data`.
+  - Checked `len(config.MinClientVer) == 0` and `len(config.MaxClientVer) == 0` in `RealityServer` so non-nil empty version slices do not evaluate to version `0` and reject valid clients.
+* **Listener-Scoped Context Cancellation on Shutdown (`reality.go`)**:
+  - Added a listener-scoped `context.Context` and `context.CancelFunc` to `realityListener` that is cancelled in `Close()` and passed to `RealityServer(l.ctx, conn, l.config)`, ensuring in-flight handshakes abort immediately when the listener shuts down.
+* **Stack-Allocated GREASE Seed Buffer & Bounds Guard (`u_parrots.go`, `u_tls_extensions.go`)**:
+  - Replaced heap-allocated `grease_bytes := make([]byte, 2*ssl_grease_seed_count)` in `u_parrots.go` with stack-allocated `var grease_bytes [2 * ssl_grease_seed_count]byte`, and added a defensive index bounds check in `getBoringGREASEValue`.
+* **Singleton Certificate Isolation in `TestRealitySignMldsa65` (`reality_test.go`)**:
+  - Cloned the singleton `signedCert` slice returned by `realityServerCertMldsa65()` before writing test signatures into `signedCert[126:]`, preventing concurrent tests from mutating the shared backing array.
+
 ### 3.10 Error Receiver Method Ambiguity Remediation (`tls.go`)
 * **Pointer Receiver on `timeoutError`**:
   - In `tls.go`, `timeoutError` implemented `Error()`, `Timeout()`, and `Temporary()` with value receivers (`(timeoutError)`), causing both `timeoutError` and `*timeoutError` to implement `error` and `net.Error`, creating type-assertion ambiguity.
   - Converted the receiver to pointer `(*timeoutError)` so only `*timeoutError` implements `error`.
+
+---
+
+### 3.12 RFC 9460 ECH Unknown-Version Skip Compliance & Zero-Copy ECH Extension Parsing (`ech.go`)
+* **Critical RFC 9460 Unknown-Version ECH Config Skip Fix (`ech.go`)**:
+  - In `Conn.processECHClientHello`, the loop over `c.config.EncryptedClientHelloKeys` checked `if err != nil || skip` and returned `alertInternalError` whenever `skip == true`. Because `parseECHConfig` returns `skip = true, err = nil` for ECH configurations with an unrecognized version (as mandated by RFC 9460), any server configured with multiple ECH keys where one had a newer or unknown draft version aborted all ECH handshakes with `internal_error`.
+  - Fixed the condition to `if err != nil` and added `if skip { continue }`, properly skipping unknown-version ECH configs while continuing to match valid keys.
+* **Zero-Copy `parseECHExt` & Single-Allocation `decodeInnerClientHello` (`ech.go`)**:
+  - Removed the redundant `data := make([]byte, len(ext)); copy(data, ext)` heap allocation in `parseECHExt`, parsing `cryptobyte.String(ext)` directly.
+  - Replaced `bytes.Replace(hello[4:], payload, make([]byte, len(payload)), 1)` in `decodeInnerClientHello` with `bytes.Clone(hello[4:])` + in-place `clear(...)`, eliminating the temporary zero-slice heap allocation.
+
+* **Nil `RemoteAddr()` Guard, Zero-Allocation Wildcard Regex Cache Lookup, Symmetrical Fallback Read Deadline & SessionID Integrity in `RealityServer` (`reality.go`)**:
+  - Guarded `c.RemoteAddr()` against `nil` before calling `.String()` in `realityServerHandshakeStateTLS13.handshake()`, preventing nil-pointer panics when `RealityServer` runs over in-memory virtual pipes with logging enabled.
+  - Keyed `realityWildcardRegexCache` in `matchRealityServerName` directly by `pattern` before calling `regexp.QuoteMeta` and `strings.ReplaceAll`, eliminating 3 heap string allocations on cache hits.
+  - Set `_ = target.SetReadDeadline(time.Now().Add(fallbackReadDeadline))` after `target.CloseWrite()` on client-to-target fallback EOF so stalled destination servers cannot leak fallback goroutines or sockets.
+  - Added `len(hs.clientHello.sessionId) == realitySessionIDLen` (32 bytes) pre-check before X25519 ECDH/HKDF/AES-GCM in `RealityServer` (`reality.go`) to skip cryptographic work on non-32-byte `SessionID` ClientHellos, and restored `copy(hs.clientHello.sessionId, ciphertext[:])` immediately after `aead.Open` on authentication failure so `hs.clientHello.sessionId` (aliased into `hs.clientHello.original`) is never left zeroed out on fallback connections.
 
 ---
 

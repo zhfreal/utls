@@ -48,7 +48,8 @@ func TestRealitySignMldsa65(t *testing.T) {
 		t.Fatalf("failed to generate ML-DSA-65 key: %v", err)
 	}
 
-	_, signedCert := realityServerCertMldsa65()
+	_, rawCert := realityServerCertMldsa65()
+	signedCert := append([]byte(nil), rawCert...)
 
 	// Mocking what RealityServer does
 	digest := []byte("mock-tls-transcript-hash-32bytes-long")
@@ -63,5 +64,11 @@ func TestRealitySignMldsa65(t *testing.T) {
 	valid := mldsa65.Verify(pk, digest, nil, signedCert[126:126+mldsa65.SignatureSize])
 	if !valid {
 		t.Fatalf("ML-DSA-65 signature verification failed on the mock signedCert buffer")
+	}
+}
+
+func TestRealityFallbackReadDeadlineConstant(t *testing.T) {
+	if realityFallbackReadDeadline <= 0 {
+		t.Fatalf("expected positive realityFallbackReadDeadline, got %v", realityFallbackReadDeadline)
 	}
 }

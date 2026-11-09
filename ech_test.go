@@ -46,3 +46,18 @@ func TestSkipBadConfigs(t *testing.T) {
 		t.Fatal("pickECHConfig picked an invalid config")
 	}
 }
+
+func TestParseECHConfigSkipUnknownVersion(t *testing.T) {
+	// Unknown ECH version 0xba, 0xdd with length 4 (payload 01020304)
+	raw, err := hex.DecodeString("badd000401020304")
+	if err != nil {
+		t.Fatal(err)
+	}
+	skip, _, err := parseECHConfig(raw)
+	if err != nil {
+		t.Fatalf("expected nil error on unknown ECH version, got %v", err)
+	}
+	if !skip {
+		t.Fatalf("expected skip=true on unknown ECH version")
+	}
+}

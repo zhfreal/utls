@@ -3703,9 +3703,9 @@ func (uconn *UConn) ApplyPreset(p *ClientHelloSpec) error {
 	}
 
 	// Currently, GREASE is assumed to come from BoringSSL
-	grease_bytes := make([]byte, 2*ssl_grease_seed_count)
+	var grease_bytes [2 * ssl_grease_seed_count]byte
 	grease_extensions_seen := 0
-	_, err = io.ReadFull(uconn.config.rand(), grease_bytes)
+	_, err = io.ReadFull(uconn.config.rand(), grease_bytes[:])
 	if err != nil {
 		return errors.New("tls: short read from Rand: " + err.Error())
 	}

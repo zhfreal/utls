@@ -408,7 +408,13 @@ func decodeInnerClientHello(outer *clientHelloMsg, encoded []byte) (*clientHello
 }
 
 func decryptECHPayload(context *hpke.Recipient, hello, payload []byte) ([]byte, error) {
-	outerAAD := bytes.Replace(hello[4:], payload, make([]byte, len(payload)), 1)
+	if len(hello) < 4 {
+		return nil, errors.New("tls: malformed outer client hello")
+	}
+	outerAAD := bytes.Clone(hello[4:])
+	if idx := bytes.Index(outerAAD, payload); idx >= 0 {
+		clear(outerAAD[idx : idx+len(payload)])
+	}
 	return context.Open(outerAAD, payload)
 }
 
@@ -513,9 +519,7 @@ const (
 )
 
 func parseECHExt(ext []byte) (echType echExtType, cs echCipher, configID uint8, encap []byte, payload []byte, err error) {
-	data := make([]byte, len(ext))
-	copy(data, ext)
-	s := cryptobyte.String(data)
+	s := cryptobyte.String(ext)
 	var echInt uint8
 	if !s.ReadUint8(&echInt) {
 		err = errMalformedECHExt
@@ -581,7 +585,7 @@ func (c *Conn) processECHClientHello(outer *clientHelloMsg, echKeys []EncryptedC
 
 	for _, echKey := range echKeys {
 		skip, config, err := parseECHConfig(echKey.Config)
-		if err != nil || skip {
+		if err != nil {
 			c.sendAlert(alertInternalError)
 			return nil, nil, fmt.Errorf("tls: invalid EncryptedClientHelloKey Config: %s", err)
 		}

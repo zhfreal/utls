@@ -300,7 +300,11 @@ func (hs *realityServerHandshakeStateTLS13) handshake() error {
 	*/
 	{
 		if config.Log != nil {
-			config.Log("REALITY remoteAddr: %v using X25519MLKEM768: %v", c.RemoteAddr().String(), hs.hello.serverShare.group == X25519MLKEM768)
+			var rAddr string
+			if c.RemoteAddr() != nil {
+				rAddr = c.RemoteAddr().String()
+			}
+			config.Log("REALITY remoteAddr: %v using X25519MLKEM768: %v", rAddr, hs.hello.serverShare.group == X25519MLKEM768)
 		}
 
 		hs.suite = cipherSuiteTLS13ByID(hs.hello.cipherSuite)
@@ -344,6 +348,9 @@ func (hs *realityServerHandshakeStateTLS13) handshake() error {
 		}
 
 		if hs.hello.serverShare.group == X25519MLKEM768 {
+			if len(hs.hello.serverShare.data) < mlkem.CiphertextSize768+realityX25519KeyLen {
+				return errors.New("tls: server share buffer too small for X25519MLKEM768")
+			}
 			k, err := mlkem.NewEncapsulationKey768(peerData[:mlkem.EncapsulationKeySize768])
 			if err != nil {
 				return errors.New("tls: invalid ML-KEM-768 key: " + err.Error())
@@ -560,7 +567,7 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 				}
 			}
 			switch {
-			case peerPub != nil:
+			case peerPub != nil && len(hs.clientHello.sessionId) == realitySessionIDLen:
 				if hs.AuthKey, err = curve25519.X25519(config.PrivateKey, peerPub); err != nil {
 					break
 				}
@@ -575,10 +582,12 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 				var ciphertext, plainText [realitySessionIDLen]byte
 				copy(ciphertext[:], hs.clientHello.sessionId)
 				copy(hs.clientHello.sessionId, plainText[:]) // hs.clientHello.sessionId points to hs.clientHello.raw[39:]
-				if _, err = aead.Open(plainText[:0], hs.clientHello.random[realityAuthKeyHKDFSaltLen:], ciphertext[:], hs.clientHello.original); err != nil {
+				_, openErr := aead.Open(plainText[:0], hs.clientHello.random[realityAuthKeyHKDFSaltLen:], ciphertext[:], hs.clientHello.original)
+				copy(hs.clientHello.sessionId, ciphertext[:])
+				if openErr != nil {
+					err = openErr
 					break
 				}
-				copy(hs.clientHello.sessionId, ciphertext[:])
 				copy(hs.ClientVer[:], plainText[:])
 				hs.ClientTime = time.Unix(int64(binary.BigEndian.Uint32(plainText[realityClientTimeOffset:])), 0)
 				copy(hs.ClientShortId[:], plainText[realityClientShortIDOffset:])
@@ -587,8 +596,8 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 					config.Log("REALITY remoteAddr: %v hs.c.ClientTime: %v", remoteAddr, hs.ClientTime)
 					config.Log("REALITY remoteAddr: %v hs.c.ClientShortId: %v", remoteAddr, hs.ClientShortId)
 				}
-				if (config.MinClientVer == nil || realityValue(hs.ClientVer[:]...) >= realityValue(config.MinClientVer...)) &&
-					(config.MaxClientVer == nil || realityValue(hs.ClientVer[:]...) <= realityValue(config.MaxClientVer...)) &&
+				if (len(config.MinClientVer) == 0 || realityValue(hs.ClientVer[:]...) >= realityValue(config.MinClientVer...)) &&
+					(len(config.MaxClientVer) == 0 || realityValue(hs.ClientVer[:]...) <= realityValue(config.MaxClientVer...)) &&
 					(config.MaxTimeDiff == 0 || config.time().Sub(hs.ClientTime).Abs() <= config.MaxTimeDiff) &&
 					(config.ShortIds[hs.ClientShortId]) {
 					hs.c.conn = conn
@@ -610,6 +619,7 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 				if cw, ok := target.(realityCloseWriteConn); ok {
 					_ = cw.CloseWrite()
 				}
+				_ = target.SetReadDeadline(time.Now().Add(fallbackReadDeadline))
 			} else {
 				_ = target.Close()
 			}
@@ -753,6 +763,7 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 						if cw, ok := target.(realityCloseWriteConn); ok {
 							_ = cw.CloseWrite()
 						}
+						_ = target.SetReadDeadline(time.Now().Add(fallbackReadDeadline))
 					} else {
 						_ = target.Close()
 					}
@@ -813,6 +824,8 @@ func loadOrParseRealityMldsa65PrivateKey(raw []byte) (*mldsa65.PrivateKey, error
 type realityListener struct {
 	net.Listener
 	config    *RealityConfig
+	ctx       context.Context
+	cancel    context.CancelFunc
 	conns     chan net.Conn
 	done      chan struct{}
 	closeOnce sync.Once
@@ -845,6 +858,9 @@ func (l *realityListener) Accept() (net.Conn, error) {
 func (l *realityListener) Close() error {
 	err := l.Listener.Close()
 	l.closeOnce.Do(func() {
+		if l.cancel != nil {
+			l.cancel()
+		}
 		close(l.done)
 	})
 	for {
@@ -864,9 +880,12 @@ func (l *realityListener) Close() error {
 // The configuration config must be non-nil and must include
 // at least one certificate or else set GetCertificate.
 func NewRealityListener(inner net.Listener, config *RealityConfig) net.Listener {
+	ctx, cancel := context.WithCancel(context.Background())
 	l := &realityListener{
 		Listener: inner,
 		config:   config,
+		ctx:      ctx,
+		cancel:   cancel,
 		conns:    make(chan net.Conn),
 		done:     make(chan struct{}),
 	}
@@ -878,6 +897,9 @@ func NewRealityListener(inner net.Listener, config *RealityConfig) net.Listener 
 				l.err = acceptErr
 				l.errMu.Unlock()
 				l.closeOnce.Do(func() {
+					if l.cancel != nil {
+						l.cancel()
+					}
 					close(l.done)
 				})
 				return
@@ -894,7 +916,7 @@ func NewRealityListener(inner net.Listener, config *RealityConfig) net.Listener 
 					}
 				}()
 				var hsErr error
-				tlsConn, hsErr = RealityServer(context.Background(), conn, l.config)
+				tlsConn, hsErr = RealityServer(l.ctx, conn, l.config)
 				if hsErr == nil {
 					select {
 					case l.conns <- tlsConn:
@@ -932,13 +954,15 @@ func matchRealityServerName(serverNames map[string]bool, sni string) bool {
 		if !enabled || !strings.Contains(pattern, "*") || pattern == "*" {
 			continue
 		}
-		reStr := "^" + strings.ReplaceAll(regexp.QuoteMeta(pattern), "\\*", "[^.]+") + "$"
 		var re *regexp.Regexp
-		if val, ok := realityWildcardRegexCache.Load(reStr); ok {
+		if val, ok := realityWildcardRegexCache.Load(pattern); ok {
 			re = val.(*regexp.Regexp)
-		} else if compiled, err := regexp.Compile(reStr); err == nil {
-			realityWildcardRegexCache.Store(reStr, compiled)
-			re = compiled
+		} else {
+			reStr := "^" + strings.ReplaceAll(regexp.QuoteMeta(pattern), "\\*", "[^.]+") + "$"
+			if compiled, err := regexp.Compile(reStr); err == nil {
+				realityWildcardRegexCache.Store(pattern, compiled)
+				re = compiled
+			}
 		}
 		if re != nil && re.MatchString(sni) {
 			return true
