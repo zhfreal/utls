@@ -1,7 +1,7 @@
 # Codebase Change Statement: utls
 
-**Current Codebase:** `zhfreal/utls` (`main-patched`, Tag: `v1.9.0-patch13` / `v1.9.0+patch13`)  
-**Original Upstream Baseline:** `MetaCubeX/utls` (Branch `v1.9.0-mod-meta`, Commit `a6a364afbd13015e2d6da7d55f8ad4123f9fc0b9`)  
+**Current Codebase:** `zhfreal/utls` (`main-patched`, Tag: `v1.9.0-patch14` / `v1.9.0+patch14`)  
+**Original Upstream Baseline:** `MetaCubeX/utls` (Branch `v1.9.0-mod-meta`, Commit `89a07ad380e263f7c3b406a3f7beb2a70dea263c`, Tag: `v1.9.0-alpha.1`)  
 **Repository Location:** `./utls-mine` (symlinked to `/home/robin/Source/clash/clash.meta/utls-mine`)  
 **Status:** Production-Ready, Race-Verified (`go test -race ./...` passing 100%)
 
@@ -9,7 +9,7 @@
 
 ## 1. Executive Summary
 
-This document specifies the complete architectural, cryptographic, performance, and memory-safety delta between the current codebase (`zhfreal/utls @ main-patched`) and the original upstream baseline (`MetaCubeX/utls @ v1.9.0-mod-meta`, commit `a6a364afbd13015e2d6da7d55f8ad4123f9fc0b9`).
+This document specifies the complete architectural, cryptographic, performance, and memory-safety delta between the current codebase (`zhfreal/utls @ main-patched`) and the original upstream baseline (`MetaCubeX/utls @ v1.9.0-mod-meta`, commit `89a07ad380e263f7c3b406a3f7beb2a70dea263c`, tag `v1.9.0-alpha.1`).
 
 The modifications against the original upstream codebase are organized into two principal categories:
 1. **Type 1: New Features & Cryptographic Extensions**: Modern browser ClientHello fingerprint parrots (Chrome 155, Edge 155, Firefox 157, Opera 136, Opera 89–91, Brave 146, iOS 26.3, Android 14/15 OkHttp, 360 Browser 122, QQ Browser 123), TLS Trust Anchors extension (`0xca34`), end-to-end post-quantum ML-DSA (`MLDSA44`, `MLDSA65`, `MLDSA87`) certificate signature verification and SPKI public key recovery, multi-hybrid key share routing (`SecP256r1MLKEM768`, `SecP384r1MLKEM1024`, `X25519MLKEM768`), and REALITY server wildcard SNI & ML-DSA-65 certificate signing.
@@ -104,7 +104,7 @@ The modifications against the original upstream codebase are organized into two 
 
 ## 4. File Modification & Addition Matrix
 
-| File Path | Status | Change Category | Description of Delta Relative to Upstream Baseline (`a6a364af`) |
+| File Path | Status | Change Category | Description of Delta Relative to Upstream Baseline (`89a07ad3`) |
 | :--- | :--- | :--- | :--- |
 | `u_chrome155.go` / `u_chrome155_test.go` | **Added** | **Features & Testing** | Chrome 155 Trust Anchor IDs and captured wire-format / ML-DSA tests. |
 | `u_opera136.go` / `u_opera136_test.go` | **Added** | **Features & Testing** | Opera 136 Trust Anchor IDs and captured wire-format tests. |
