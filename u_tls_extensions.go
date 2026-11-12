@@ -1385,7 +1385,7 @@ func (e *QUICTransportParametersExtension) Read(b []byte) (int, error) {
 
 func (e *QUICTransportParametersExtension) writeToUConn(uc *UConn) error {
 	if uc != nil && uc.quic != nil && len(e.TransportParameters) == 0 && len(e.marshalResult) == 0 && len(uc.quic.transportParams) > 0 {
-		e.marshalResult = uc.quic.transportParams
+		e.marshalResult = append([]byte{}, uc.quic.transportParams...)
 	}
 	return nil
 }

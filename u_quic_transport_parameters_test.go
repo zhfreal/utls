@@ -69,3 +69,63 @@ var (
 		0x00, 0x00, 0x0c, 0x00,
 	}
 )
+
+func TestUQUICConn_SetTransportParameters(t *testing.T) {
+	runtimeParams := []byte{0x01, 0x02, 0x03, 0x04}
+
+	// Case 1: Empty TransportParameters (e.g. from preset) receives runtime params
+	{
+		emptyQTP := &QUICTransportParametersExtension{}
+		uconn := UClient(nil, &Config{MinVersion: VersionTLS13}, HelloCustom)
+		uconn.Extensions = []TLSExtension{emptyQTP}
+		qconn := newUQUICConn(uconn, &QUICConfig{TLSConfig: &Config{MinVersion: VersionTLS13}})
+		qconn.SetTransportParameters(runtimeParams)
+
+		if !bytes.Equal(emptyQTP.marshalResult, runtimeParams) {
+			t.Fatalf("expected emptyQTP.marshalResult = %v, got %v", runtimeParams, emptyQTP.marshalResult)
+		}
+		if !bytes.Equal(uconn.quic.transportParams, runtimeParams) {
+			t.Fatalf("expected quic.transportParams = %v, got %v", runtimeParams, uconn.quic.transportParams)
+		}
+	}
+
+	// Case 2: Explicit TransportParameters must NOT be overwritten by runtime params
+	{
+		explicitQTP := &QUICTransportParametersExtension{
+			TransportParameters: TransportParameters{
+				MaxDatagramFrameSize(1200),
+			},
+		}
+		uconn := UClient(nil, &Config{MinVersion: VersionTLS13}, HelloCustom)
+		uconn.Extensions = []TLSExtension{explicitQTP}
+		qconn := newUQUICConn(uconn, &QUICConfig{TLSConfig: &Config{MinVersion: VersionTLS13}})
+		qconn.SetTransportParameters(runtimeParams)
+
+		if len(explicitQTP.marshalResult) != 0 {
+			t.Fatalf("expected explicitQTP.marshalResult to remain empty, got %v", explicitQTP.marshalResult)
+		}
+		if !bytes.Equal(uconn.quic.transportParams, runtimeParams) {
+			t.Fatalf("expected quic.transportParams = %v, got %v", runtimeParams, uconn.quic.transportParams)
+		}
+	}
+
+	// Case 3: writeToUConn propagates quic.transportParams on ApplyConfig if empty
+	{
+		emptyQTP := &QUICTransportParametersExtension{}
+		uconn := UClient(nil, &Config{MinVersion: VersionTLS13}, HelloCustom)
+		uconn.quic = &quicState{transportParams: append([]byte{}, runtimeParams...)}
+		uconn.Extensions = []TLSExtension{emptyQTP}
+		if err := uconn.ApplyConfig(); err != nil {
+			t.Fatalf("ApplyConfig failed: %v", err)
+		}
+		if !bytes.Equal(emptyQTP.marshalResult, runtimeParams) {
+			t.Fatalf("expected emptyQTP.marshalResult = %v, got %v", runtimeParams, emptyQTP.marshalResult)
+		}
+
+		// Ensure mutating uconn.quic.transportParams does not mutate marshalResult (anti-aliasing)
+		uconn.quic.transportParams[0] = 0xee
+		if !bytes.Equal(emptyQTP.marshalResult, runtimeParams) {
+			t.Fatalf("expected emptyQTP.marshalResult to be cloned, got %v", emptyQTP.marshalResult)
+		}
+	}
+}

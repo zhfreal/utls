@@ -208,10 +208,13 @@ func (q *UQUICConn) SetTransportParameters(params []byte) {
 
 	// A ClientHello built from a preset marshals its own
 	// QUICTransportParametersExtension, which ApplyPreset cloned from the
-	// caller's spec. Put the parameters there, so they reach the peer.
+	// caller's spec. Put the parameters there, so they reach the peer if
+	// not explicitly configured by the caller.
 	for _, ext := range q.conn.Extensions {
 		if qtp, ok := ext.(*QUICTransportParametersExtension); ok {
-			qtp.marshalResult = append([]byte{}, params...)
+			if len(qtp.TransportParameters) == 0 {
+				qtp.marshalResult = append([]byte{}, params...)
+			}
 		}
 	}
 
