@@ -1,7 +1,7 @@
 # Codebase Change Statement: utls
 
-**Current Codebase:** `zhfreal/utls` (`main-patched`, Tag: `v1.9.0-patch11` / `v1.9.0+patch11`)  
-**Original Upstream Baseline:** `MetaCubeX/utls` (Branch `v1.9.0-mod-meta`, Git Commit `a6a364afbd13015e2d6da7d55f8ad4123f9fc0b9`)  
+**Current Codebase:** `zhfreal/utls` (`main-patched`, Tag: `v1.9.0-patch13` / `v1.9.0+patch13`)  
+**Original Upstream Baseline:** `MetaCubeX/utls` (Branch `v1.9.0-mod-meta`, Commit `a6a364afbd13015e2d6da7d55f8ad4123f9fc0b9`)  
 **Repository Location:** `./utls-mine` (symlinked to `/home/robin/Source/clash/clash.meta/utls-mine`)  
 **Status:** Production-Ready, Race-Verified (`go test -race ./...` passing 100%)
 
@@ -9,166 +9,116 @@
 
 ## 1. Executive Summary
 
-This document specifies the complete architectural, cryptographic, and performance delta between the current codebase (`zhfreal/utls @ main-patched`) and the original upstream baseline (`MetaCubeX/utls @ v1.9.0-mod-meta`).
+This document specifies the complete architectural, cryptographic, performance, and memory-safety delta between the current codebase (`zhfreal/utls @ main-patched`) and the original upstream baseline (`MetaCubeX/utls @ v1.9.0-mod-meta`, commit `a6a364afbd13015e2d6da7d55f8ad4123f9fc0b9`).
 
-The modifications are structured into two distinct categories:
-1. **Type 1: New Features & Cryptographic Extensions**: Live browser ClientHello fingerprint parrots (Opera 136, Chrome 155, Firefox 157), end-to-end post-quantum ML-DSA signature verification with direct SPKI public key extraction, embedded server-side REALITY negotiation engine, and multi-hybrid keyshare routing.
-
-- **Named Default Constants for All Tunable Parameters (`u_common.go`, `u_conn.go`, `u_fingerprinter.go`, `u_session_controller.go`)**: Formalized all added and modified buffer sizes, slice lengths, cache limits, and extension capacities (`DefaultSessionTicketMaxBytes`, `DefaultFingerprinterMaxAlpnLen`, `DefaultInitialKeyShareCap`, `DefaultClientHelloPadAlign`, `DefaultPSKIdentitiesCap`, `DefaultCipherSuitesCap`) as named `const` default definitions with zero inline magic numbers.
-2. **Type 2: Bug Fixes, Concurrency & Memory Safety Remediations**: Elimination of concurrent map read/write crashes via deep configuration cloning, listener panic elimination on shutdown (`send on closed channel`), handshake memory aliasing fixes, thread-safe PRNG synchronization protecting LFSR state, TCP socket leak elimination on handshake failure, and hot-path zero-allocation refactoring.
+The modifications against the original upstream codebase are organized into two principal categories:
+1. **Type 1: New Features & Cryptographic Extensions**: Modern browser ClientHello fingerprint parrots (Chrome 155, Edge 155, Firefox 157, Opera 136, Opera 89–91, Brave 146, iOS 26.3, Android 14/15 OkHttp, 360 Browser 122, QQ Browser 123), TLS Trust Anchors extension (`0xca34`), end-to-end post-quantum ML-DSA (`MLDSA44`, `MLDSA65`, `MLDSA87`) certificate signature verification and SPKI public key recovery, multi-hybrid key share routing (`SecP256r1MLKEM768`, `SecP384r1MLKEM1024`, `X25519MLKEM768`), and REALITY server wildcard SNI & ML-DSA-65 certificate signing.
+2. **Type 2: Bug Fixes, Concurrency, Memory Leak & Resource Usage Remediations**: Deep `RealityConfig.Clone()` preventing concurrent map read/write crashes, `realityListener` shutdown panic and socket leak elimination, capacity-preserving `realityS2CBufPool` and `realityServerBufPool` pooling, automatic reclamation of `c.hand` and `c.rawInput` (`bytes.Buffer`) across `UConn` and `RealityServer` handshakes and fallbacks, compressed certificate stream truncation/trailing-data validation, RFC 9460 ECH unknown-version skip compliance, thread-safe PRNG mutex synchronization, `Roller.Dial` socket leak cleanup, and zero-allocation hot-path optimizations.
 
 ---
 
 ## 2. New Features
 
-### 2.1 Modern Browser Fingerprint Parrots (`u_parrots.go`, `u_opera136.go`, `u_chrome155.go`)
-* **Opera 136 Live Profile (`HelloOpera_136`)**:
-  - Implemented exact ClientHello byte sequence captured from Opera 136 (`u_opera136.go`).
-  - Includes modern extension ordering, `X25519MLKEM768` hybrid post-quantum key shares, ML-DSA trust anchors, ALPN, and GREASE extensions.
-* **Chrome 155 & Firefox 157 Profiles**:
-  - Added `HelloChrome_155` and `HelloFirefox_157` matching modern browser TLS 1.3 handshakes.
-  - Added hybrid post-quantum curve support (`SecP256r1MLKEM768`, `SecP384r1MLKEM1024`, and `X25519MLKEM768`) in `u_parrots.go`.
+### 2.1 Modern Browser Fingerprint Parrots (`u_common.go`, `u_parrots.go`, `u_chrome155.go`, `u_opera136.go`)
+* **Chromium, Firefox, Mobile & Regional Browser Profiles**:
+  - Added `HelloChrome_155` (and updated `HelloChrome_Auto`), `HelloEdge_155` (`HelloEdge_Auto`), `HelloFirefox_157` (`HelloFirefox_Auto`), `HelloOpera_136` (`HelloOpera_Auto`), `HelloOpera_89`, `HelloOpera_90`, `HelloOpera_91`, `HelloBrave_146` (`HelloBrave_Auto`), `HelloIOS_26_3` (`HelloIOS_Auto`), `HelloAndroid_14_OkHttp` (`HelloAndroid_Auto`), `HelloAndroid_15_OkHttp`, `Hello360_122` (`Hello360_Auto`), and `HelloQQ_123` (`HelloQQ_Auto`).
+* **GREASE Signature Algorithm & Hybrid KeyShare Support**:
+  - Extended GREASE seed generation (`ssl_grease_ech_config_id`, `ssl_grease_signature_algorithm`, `ssl_grease_seed_count`) so `SignatureAlgorithmsExtension` replaces `GREASE_PLACEHOLDER` entries with deterministic BoringSSL GREASE values while keeping the exported `GetBoringGREASEValue` signature backward-compatible.
+  - Added hybrid post-quantum curve support for `SecP256r1MLKEM768` (P-256 + ML-KEM-768) and `SecP384r1MLKEM1024` (P-384 + ML-KEM-1024) alongside `X25519MLKEM768` and `X25519Kyber768Draft00` in `classicalCurveForHybrid` and `UConn.ApplyPreset`.
 
-### 2.2 Post-Quantum ML-DSA Signature Verification (`mldsa.go`, `mldsa_circl.go`)
-* **Direct SPKI Public Key Recovery**:
-  - Implemented PKIX public key unmarshaling from `RawSubjectPublicKeyInfo` via `circlpki.UnmarshalPKIXPublicKey` in `mldsa_circl.go`.
-  - Recovers unparsed SPKI public keys for ML-DSA-44, ML-DSA-65, and ML-DSA-87 without requiring Go runtime standard library support.
-* **Handshake Signature Verification**:
-  - Wired `signatureMLDSA` directly to `verifyMLDSAHandshakeSignature`, verifying post-quantum certificate signatures during TLS 1.3 handshakes.
+### 2.2 TLS Trust Anchors Extension (`0xca34`) (`u_trust_anchors.go`, `u_common.go`, `u_tls_extensions.go`, `dicttls/exttype_values.go`)
+* **Draft Trust Anchor IDs Extension (`TrustAnchorsExtension`)**:
+  - Implemented `TrustAnchorsExtension` (`utlsExtensionTrustAnchors = 0xca34`) with wire serialization (`Read`/`Write`), JSON unmarshaling, non-aliasing slice copying, and strict RFC length validation (each TrustAnchorID in `1..255` bytes, total extension payload `<= 65535` bytes).
+  - Wired `chrome155TrustAnchorIDs()` (`u_chrome155.go`) and `opera136TrustAnchorIDs()` (`u_opera136.go`) into their respective browser presets.
 
-### 2.3 Embedded REALITY Protocol Engine & Wildcard SNI (`reality.go`)
-* **Embedded REALITY Protocol Engine**:
-  - Integrated server-side REALITY negotiation and listener infrastructure (`RealityConfig`, `NewRealityListener`).
-  - Supported exact match, single-label wildcard (`*.example.com`), and catch-all (`*`), backed by `realityWildcardRegexCache` (`sync.Map`).
-  - Cached parsed ML-DSA-65 private keys in `realityMldsa65KeyCache` (`sync.Map`) keyed by stack-allocated SHA-256 digests (`[32]byte`) via `loadOrParseRealityMldsa65PrivateKey` to eliminate per-handshake key unmarshaling and eliminate 4KB string heap allocations.
-* **Half-Close Fallback Handling & Stalled Session Teardown**:
-  - Added `CloseWrite()` / `target.Close()` handling on fallback upload and download completion matching REALITY core specifications.
-  - Implemented a 5-second read deadline grace period on fallback download completion, ensuring hung half-closed client sockets terminate cleanly and preventing indefinite goroutine and socket leaks.
+### 2.3 Post-Quantum ML-DSA Signature Verification (`mldsa.go`, `mldsa_circl.go`, `auth.go`, `cache.go`, `common.go`, `handshake_client_tls13.go`)
+* **Direct SPKI Public Key Recovery (`mldsa_circl.go`, `cache.go`)**:
+  - Added `parseCertificate(der []byte)` in `mldsa_circl.go` and wired it into `certCache.newCert` (`cache.go`). When `x509.ParseCertificate` returns a certificate with a nil `PublicKey`, `parseCertificate` inspects `RawSubjectPublicKeyInfo` via `circlpki.UnmarshalPKIXPublicKey` to recover `ML-DSA-44`, `ML-DSA-65`, or `ML-DSA-87` public keys.
+* **TLS 1.3 CertificateVerify Validation (`auth.go`, `handshake_client_tls13.go`)**:
+  - Added `MLDSA44` (`0x0904`), `MLDSA65` (`0x0905`), and `MLDSA87` (`0x0906`) signature schemes with `directSigning` (no pre-hash) and `verifyMLDSAHandshakeSignature` in `auth.go` and `handshake_client_tls13.go`.
 
-### 2.4 Multi-Hybrid KeyShare Private Key Routing (`key_schedule.go`, `u_public.go`)
-* **Multi-Curve Routing**:
-  - Extended `KeySharePrivateKeys` with `MlkemKeys map[CurveID]mlkem.Decapsulator`.
-  - Updated `hybridKeyExchange.clientSharedSecret` to look up decapsulators by negotiated hybrid `CurveID` before falling back to default keys, enabling seamless multi-curve hybrid negotiations.
+### 2.4 Multi-Hybrid KeyShare Private Key Routing (`key_schedule.go`, `u_public.go`, `u_parrots.go`)
+* **Per-Group ECDHE & ML-KEM Key Maps**:
+  - Extended `keySharePrivateKeys` and `KeySharePrivateKeys` with `keys`/`Keys map[CurveID]*ecdh.PrivateKey` and `mlkemKeys`/`MlkemKeys map[CurveID]mlkem.Decapsulator`.
+  - Updated `ecdhKeyExchange.clientSharedSecretChooseEcdhe` and `hybridKeyExchange.clientSharedSecret` to resolve private keys by the server-selected `CurveID` before falling back to single-key fields, allowing ClientHellos advertising multiple classical and hybrid key shares simultaneously to complete handshakes for any server-selected group.
+
+### 2.5 Embedded REALITY Wildcard SNI, ML-DSA-65 Signing & Tunable Timeouts (`reality.go`, `patch_reality_server.go`)
+* **Wildcard ServerName Matching**:
+  - Added `matchRealityServerName` supporting exact match, single-label suffix fast-path (`*.example.com`), general wildcard regex matching cached in `realityWildcardRegexCache` (`sync.Map`) keyed directly by raw `pattern` string (zero allocations on cache hit), and catch-all `"*"` (while rejecting empty SNI `""`).
+* **Lazy ML-DSA-65 Server Certificate Template & Private Key Cache**:
+  - Added `realityServerCertMldsa65` (`patch_reality_server.go`) lazily initialized via `onceValues` and `loadOrParseRealityMldsa65PrivateKey` (`reality.go`) caching parsed `*mldsa65.PrivateKey` instances in `realityMldsa65KeyCache` (`sync.Map`) keyed by stack-allocated `[32]byte` SHA-256 digests (`sha256.Sum256(raw)`).
+* **Tunable Timeouts & Named Protocol Constants**:
+  - Added `HandshakeTimeout` and `FallbackReadDeadline` to `RealityConfig` and defined named constants in `reality.go` and `u_roller.go` (`realityIndexServerHello`..`realityIndexNewSessionTicket`, `realityChangeCipherSpecRecordLen`, `realityChangeCipherSpecPayloadByte`, `realityEncryptedExtensionsMinLen`, `realityAuthKeyHKDFSaltLen`, `realityAuthKeyLen`, `realitySessionIDLen`, `realityClientTimeOffset`, `realityClientShortIDOffset`, `realityX25519KeyLen`, `realityMldsa65CertSignatureOffset`, `realityDefaultHandshakeTimeout`, `realityFallbackReadDeadline`, `realityClientVerLen`, `realityShortIDLen`, `realityProbeBufLen`, `realityRecordVerStart`/`End`, `realityRecordLenStart`/`End`, `RollerMinTcpDialTimeoutSecs`..`RollerRandomTlsHandshakeSpanSecs`).
 
 ---
 
-## 3. Bugfixes
+## 3. Bug Fixes, Memory Leak & Resource Usage Remediations
 
-### 3.1 REALITY Concurrent Map Read/Write & Key Share Bounds Remediations (`reality.go`)
+### 3.1 Handshake Buffer Reclamation & Scratch Buffer Pooling (`reality.go`, `u_conn.go`)
+* **Reclamation of `c.hand` and `c.rawInput` (`bytes.Buffer`) Across `UConn` and `RealityServer` (`reality.go`, `u_conn.go`)**:
+  - Upstream `Conn` retained `c.hand` (which grows to 4–16 KiB to buffer the peer's Certificate chain or ClientHello) and `c.rawInput` for the entire lifetime of every TLS connection, and `RealityServer` retained `hs.c.hand` and `hs.c.rawInput` across long-lived fallback `io.Copy` sessions.
+  - Added `(*Conn).releaseHandshakeBuffers(force bool)` in `reality.go` and wired it into `(*UConn).handshakeContext`, `(*UConn).Read`, and `RealityServer`:
+    - On successful client (`UConn`) or server (`RealityServer`) handshake completion, empty `c.hand` and `c.rawInput` buffers are reset to `bytes.Buffer{}` so established connections do not pin multi-kilobyte handshake buffers while idle.
+    - In `(*UConn).Read`, `c.hand` is reset to `bytes.Buffer{}` after consuming post-handshake messages (such as `NewSessionTicket`).
+    - In `RealityServer`, when falling back (`hs.c.conn != conn`) or when the handshake fails, `hs.c.releaseHandshakeBuffers(true)` immediately frees `c.hand`, `c.rawInput`, and `c.out.handshakeBuf` before entering fallback `io.Copy` or closing `conn`.
+* **16 KiB Target Scratch & Server-to-Client Buffer Pools (`reality.go`)**:
+  - Pooled the 16 KiB `buf` (`realityServerBufPool`) and 16 KiB `s2cSaved` (`realityS2CBufPool`) buffers in `RealityServer`, eliminating 32 KiB of heap allocations per incoming connection.
+  - Kept the pooled `s2cBufPtr` slice header unmodified (`s2cSaved := (*s2cBufPtr)[:0]` with `defer realityS2CBufPool.Put(s2cBufPtr)`) so reslicing `s2cSaved = s2cSaved[handshakeLen:]` during record consumption never shrinks the pooled buffer's capacity or escapes a slice header to the heap.
+* **Dedicated `handshakeBuf` & Safe Target Drain (`reality.go`)**:
+  - Allocated a dedicated `make([]byte, 0, handshakeLen)` slice for `hs.c.out.handshakeBuf` instead of aliasing `buf[:0]`, and passed `remaining := handshakeLen - len(s2cSaved)` by value to the drain goroutine using `io.CopyN(io.Discard, target, int64(remaining))` and a stack `probeBuf [1]byte`.
+* **Stack-Allocated SessionID Buffers, Fast-Filter & Fallback Restoration (`reality.go`)**:
+  - Added `len(hs.clientHello.sessionId) == realitySessionIDLen` (32 bytes) pre-check before X25519 ECDH, HKDF, and AES-GCM.
+  - Replaced heap-allocated `make([]byte, 32)` buffers with stack-allocated `var ciphertext, plainText [realitySessionIDLen]byte` and restored `copy(hs.clientHello.sessionId, ciphertext[:])` unconditionally after `aead.Open` so `hs.clientHello.original` is never left zeroed on fallback connections.
+
+### 3.2 REALITY Deep Config Cloning, Listener Shutdown Safety & Handshake Deadlines (`reality.go`)
 * **Deep Configuration Cloning (`RealityConfig.Clone`)**:
-  - In upstream, `RealityConfig` shallow-copied maps (`ServerNames`, `ShortIds`) and slices (`PrivateKey`, `MinClientVer`, `MaxClientVer`, `Mldsa65Verify`, `Mldsa65Key`). Concurrent modifications on cloned configs produced fatal runtime crashes: `fatal error: concurrent map read and map write`.
-  - Implemented full deep cloning of all maps and slices under `a.Config.mutex.RLock()`.
-* **TLS 1.3 Key Share Validation & Target Connection Nil Check**:
-  - Added guards for nil `peerData`, slice bounds validation for `X25519MLKEM768`, nil checks on `peerKey` and `k`, and proper error handling for `generateECDHEKey`, `NewPublicKey`, `key.ECDH`, and `mlkem.NewEncapsulationKey768`, eliminating potential panics on invalid key shares.
-  - Added defensive check `if target == nil` after `config.DialContext` in `RealityServer()`, preventing nil pointer panics on custom dialers.
-  - Added `context.AfterFunc(ctx, ...)` cancellation watchdog in `RealityServer()` to immediately close `target` and `conn` if the caller's context is cancelled.
-  - Enforced active handshake deadline watchdog (`realityDefaultHandshakeTimeout = 10s`) across both `conn` and `target` in `RealityServer()`, clearing deadlines upon successful handshake completion or fallback transition. This eliminates hung handshakes and permanently leaked goroutines when remote clients or target servers stall during the initial TLS exchange.
-  - Optimized `X25519MLKEM768` server share assembly with zero-allocation in-place copy (`copy(data[:1088], ciphertext)` and `copy(data[1088:], key)`), eliminating intermediate 1.1 KiB heap slice allocations per handshake.
+  - Deep-cloned `ServerNames`, `ShortIds`, `PrivateKey`, `MinClientVer`, `MaxClientVer`, `Mldsa65Verify`, and `Mldsa65Key` under `a.Config.mutex.RLock()`, preventing `concurrent map read and map write` crashes.
+* **Listener Panic & Socket Leak Elimination (`realityListener`)**:
+  - Replaced `close(l.conns)` on accept error with a `done chan struct{}` closed via `closeOnce sync.Once`, a listener-scoped `ctx` / `cancel`, and `errMu sync.Mutex`.
+  - Handshake workers select on `case l.conns <- tlsConn:` vs `case <-l.done: _ = tlsConn.Close()`, recover panics by closing `tlsConn` or raw `conn`, and `Close()` drains any buffered connections from `l.conns`.
+* **Handshake Deadlines, Context Watchdog & Symmetrical Fallback Teardown**:
+  - Propagated caller `ctx` into `hs.ctx`, `readClientHello(ctx)`, and a `context.AfterFunc` watchdog closing `target` and `conn` on cancellation.
+  - Applied `HandshakeTimeout` (default `10s`) to `conn` and `target` during the handshake and `FallbackReadDeadline` (default `5s`) after `CloseWrite()` in both fallback directions (`underlying -> target` and `target -> underlying`) so half-open sockets cannot leak goroutines.
+* **TLS 1.3 Cryptographic Bounds & Semantic Version Alignment**:
+  - Added nil, length, and error checks on `peerData`, `hs.hello.serverShare.data`, `generateECDHEKey`, `NewPublicKey`, `key.ECDH`, `mlkem.NewEncapsulationKey768`, and `signedCert` ML-DSA-65 signature offset, and replaced `append(ciphertext, ...)` with two direct `copy()` calls.
+  - Aligned `realityValue(vals ...byte)` to fixed major/minor/patch bit positions `(vals[i] << ((2 - i) * 8))` and checked `len(MinClientVer) == 0` / `len(MaxClientVer) == 0`.
 
-### 3.2 REALITY Listener Panic Elimination on Shutdown & Defensive Socket Teardown (`reality.go`)
-* **Elimination of `panic: send on closed channel` & Descriptor Leaks**:
-  - In upstream, `listener.Accept()` closed channels on the first error. Concurrent background handshake worker goroutines executing `l.conns <- tlsConn` then panicked with unrecoverable `send on closed channel`.
-  - Replaced raw channel closure with a `done chan struct{}` closed once via `closeOnce sync.Once`. Handshake workers now select on `case l.conns <- tlsConn: case <-l.done: _ = tlsConn.Close()`.
-  - Added defensive `recover()` teardown closing `conn` if a panic occurs before `tlsConn` assignment, preventing socket descriptor leaks on abrupt worker termination.
+### 3.3 Compressed Certificate Validation & ECH RFC 9460 Compliance (`u_handshake_client.go`, `ech.go`)
+* **Strict Certificate Decompression Stream Verification (`u_handshake_client.go`)**:
+  - Replaced single `decompressed.Read(rawMsg[4:])` in `decompressCert` with `io.ReadFull(decompressed, rawMsg[4:])`, verified that reading one additional byte (`var extra [1]byte`) returns `0, io.EOF` (detecting excess decompressed output or deferred decoder errors), and verified `compressed.Len() == 0` (rejecting trailing bytes after the compressed stream).
+* **RFC 9460 Unknown-Version ECH Config Skip & Zero-Copy ECH Parsing (`ech.go`)**:
+  - Fixed `Conn.processECHClientHello` so `skip == true` from `parseECHConfig` (unknown ECH version) skips the key rather than aborting with `alertInternalError`.
+  - Removed the intermediate `make([]byte, len(ext))` copy in `parseECHExt` and replaced `bytes.Replace` with `bytes.Clone` + `clear()` and a `len(hello) < 4` bounds guard in `decryptECHPayload`.
 
-### 3.3 Handshake Memory Aliasing & Buffer Corruption Elimination (`reality.go`)
-* **Dedicated Handshake Backing Buffer**:
-  - Allocated a dedicated backing slice `make([]byte, 0, handshakeLen)` for `hs.c.out.handshakeBuf` instead of aliasing `buf[:0]`, preventing memory corruption from concurrent `target.Read(buf)` calls.
-  - Reduced initial `s2cSaved` buffer allocation from 16 KiB to 4 KiB.
-  - Passed `remaining` by value and used stack-allocated `probeBuf [1]byte` in the post-handshake target drain goroutine.
-
-### 3.4 Thread-Safe PRNG & LFSR State Protection (`u_prng.go`)
-* **PRNG Mutex Synchronization**:
-  - Added `randMutex sync.Mutex` in `prng` to serialize access to `p.rand.Intn`, `p.rand.Int63n`, `p.rand.Perm`, and `p.rand.Shuffle`.
-  - Eliminates state corruption in `math/rand.Rand` under concurrent dialing.
-
-### 3.5 Socket & Goroutine Cleanup on Handshake Failure (`u_roller.go`)
-* **Immediate Socket Teardown**:
-  - In `Roller.Dial()`, added `_ = client.Close()` when `client.Handshake()` fails, preventing physical TCP file descriptors and buffered TLS structures from lingering in the system.
-  - Safely cloned `client.ClientHelloID` into `c.WorkingHelloID` by value instead of retaining pointers into transient connection structures.
-
-### 3.6 QUIC / UQUIC Nil-Pointer Panics & Parameter Propagation (`u_quic.go`, `quic.go`)
-* **Nil-Pointer Panic Guards**:
-  - Added `SessionTicketsDisabled` validation before calling `UQUICConn.SendSessionTicket`.
-  - Added nil `ClientSessionCache` and `SessionTicketsDisabled` guards in `UQUICConn.StoreSession` and `QUICConn.StoreSession`.
-* **Transport Parameter Propagation Across Presets**:
-  - Enabled raw transport parameters in `UQUICConn.SetTransportParameters` and `QUICTransportParametersExtension.writeToUConn` to propagate into `qtp.marshalResult` whenever `len(qtp.TransportParameters) == 0`.
-
-### 3.7 Hot-Path Zero-Allocation Optimizations (`u_conn.go`, `jls.go`)
-* **Extension List Scratch Buffer Reuse (`u_conn.go`)**:
-  - In `UConn.extensionsList()`, replaced per-extension `make([]byte, 2000)` allocations with a single reusable `scratch []byte` slice, dynamically expanding only if an extension exceeds the initial capacity.
-  - Propagated errors returned by `computeAndUpdateOuterECHExtension` in `MarshalClientHello`.
-* **JLS Authentication Optimization (`jls.go`)**:
-  - In `jlsBuildFakeRandom` and `jlsCheckFakeRandom`, reused a single `sha256` instance via `h.Reset()` and `io.WriteString`, avoiding string-to-byte heap conversions.
-  - Replaced heap allocations for `nonce`, `key`, and decrypted plaintext with stack-allocated `[32]byte` and `[jlsRandomSeedLen]byte` arrays, eliminating 7 heap allocations per JLS authentication attempt.
-
-### 3.8 Test Harness Race Condition Remediation (`handshake_test.go`)
-* **Local Error Scoping in Client Handshake Goroutine**:
-  - In `testUtlsHandshake`, scoped `presetErr := ucli.ApplyPreset(spec)` within the client handshake goroutine rather than assigning directly to the outer return variable `err`, eliminating data races reported by `-race` between the client and server handshake routines.
-
-### 3.9 Scratch Buffer Memory Pooling & Context Propagation (`reality.go`)
-* **16 KiB Connection Scratch Buffer Pool**:
-  - In upstream, `RealityServer()` allocated a 16 KiB scratch buffer (`buf := make([]byte, realitySize)`) on every incoming connection to read target ServerHello bytes. Under high concurrency, this generated excessive heap allocations.
-  - Introduced `realityServerBufPool sync.Pool` with `defer realityServerBufPool.Put(bufPtr)` in the server handshake loop, completely eliminating per-connection heap allocations for ServerHello buffering.
-* **Context Propagation & Handshake Cancellation**:
-  - Wired caller-provided `ctx context.Context` into `hs.ctx` and `readClientHello(ctx)` rather than discarding it with `context.Background()`, ensuring caller cancellation and deadlines abort pending handshakes promptly.
-
-### 3.11 Server Share Bounds Guard, Listener Handshake Cancellation, Stack GREASE Seed Allocation & Test Singleton Isolation (`reality.go`, `reality_test.go`, `u_parrots.go`, `u_tls_extensions.go`)
-* **Bounds Validation on `X25519MLKEM768` Server Key Share (`reality.go`)**:
-  - Verified `len(hs.hello.serverShare.data) >= mlkem.CiphertextSize768+realityX25519KeyLen` before copying the ML-KEM-768 ciphertext and X25519 public key into `hs.hello.serverShare.data`.
-  - Checked `len(config.MinClientVer) == 0` and `len(config.MaxClientVer) == 0` in `RealityServer` so non-nil empty version slices do not evaluate to version `0` and reject valid clients.
-* **Listener-Scoped Context Cancellation on Shutdown (`reality.go`)**:
-  - Added a listener-scoped `context.Context` and `context.CancelFunc` to `realityListener` that is cancelled in `Close()` and passed to `RealityServer(l.ctx, conn, l.config)`, ensuring in-flight handshakes abort immediately when the listener shuts down.
-* **Stack-Allocated GREASE Seed Buffer & Bounds Guard (`u_parrots.go`, `u_tls_extensions.go`)**:
-  - Replaced heap-allocated `grease_bytes := make([]byte, 2*ssl_grease_seed_count)` in `u_parrots.go` with stack-allocated `var grease_bytes [2 * ssl_grease_seed_count]byte`, and added a defensive index bounds check in `getBoringGREASEValue`.
-* **Singleton Certificate Isolation in `TestRealitySignMldsa65` (`reality_test.go`)**:
-  - Cloned the singleton `signedCert` slice returned by `realityServerCertMldsa65()` before writing test signatures into `signedCert[126:]`, preventing concurrent tests from mutating the shared backing array.
-
-### 3.10 Error Receiver Method Ambiguity Remediation (`tls.go`)
-* **Pointer Receiver on `timeoutError`**:
-  - In `tls.go`, `timeoutError` implemented `Error()`, `Timeout()`, and `Temporary()` with value receivers (`(timeoutError)`), causing both `timeoutError` and `*timeoutError` to implement `error` and `net.Error`, creating type-assertion ambiguity.
-  - Converted the receiver to pointer `(*timeoutError)` so only `*timeoutError` implements `error`.
-
----
-
-### 3.12 RFC 9460 ECH Unknown-Version Skip Compliance & Zero-Copy ECH Extension Parsing (`ech.go`)
-* **Critical RFC 9460 Unknown-Version ECH Config Skip Fix (`ech.go`)**:
-  - In `Conn.processECHClientHello`, the loop over `c.config.EncryptedClientHelloKeys` checked `if err != nil || skip` and returned `alertInternalError` whenever `skip == true`. Because `parseECHConfig` returns `skip = true, err = nil` for ECH configurations with an unrecognized version (as mandated by RFC 9460), any server configured with multiple ECH keys where one had a newer or unknown draft version aborted all ECH handshakes with `internal_error`.
-  - Fixed the condition to `if err != nil` and added `if skip { continue }`, properly skipping unknown-version ECH configs while continuing to match valid keys.
-* **Zero-Copy `parseECHExt` & Single-Allocation `decodeInnerClientHello` (`ech.go`)**:
-  - Removed the redundant `data := make([]byte, len(ext)); copy(data, ext)` heap allocation in `parseECHExt`, parsing `cryptobyte.String(ext)` directly.
-  - Replaced `bytes.Replace(hello[4:], payload, make([]byte, len(payload)), 1)` in `decodeInnerClientHello` with `bytes.Clone(hello[4:])` + in-place `clear(...)`, eliminating the temporary zero-slice heap allocation.
-
-* **Nil `RemoteAddr()` Guard, Zero-Allocation Wildcard Regex Cache Lookup, Symmetrical Fallback Read Deadline & SessionID Integrity in `RealityServer` (`reality.go`)**:
-  - Guarded `c.RemoteAddr()` against `nil` before calling `.String()` in `realityServerHandshakeStateTLS13.handshake()`, preventing nil-pointer panics when `RealityServer` runs over in-memory virtual pipes with logging enabled.
-  - Keyed `realityWildcardRegexCache` in `matchRealityServerName` directly by `pattern` before calling `regexp.QuoteMeta` and `strings.ReplaceAll`, eliminating 3 heap string allocations on cache hits.
-  - Set `_ = target.SetReadDeadline(time.Now().Add(fallbackReadDeadline))` after `target.CloseWrite()` on client-to-target fallback EOF so stalled destination servers cannot leak fallback goroutines or sockets.
-  - Added `len(hs.clientHello.sessionId) == realitySessionIDLen` (32 bytes) pre-check before X25519 ECDH/HKDF/AES-GCM in `RealityServer` (`reality.go`) to skip cryptographic work on non-32-byte `SessionID` ClientHellos, and restored `copy(hs.clientHello.sessionId, ciphertext[:])` immediately after `aead.Open` on authentication failure so `hs.clientHello.sessionId` (aliased into `hs.clientHello.original`) is never left zeroed out on fallback connections.
+### 3.4 Thread-Safe PRNG, `Roller.Dial` Leak Fix, QUIC Guards & Hot-Path Allocations (`u_prng.go`, `u_roller.go`, `u_quic.go`, `quic.go`, `u_conn.go`, `jls.go`, `tls.go`)
+* **PRNG Mutex Synchronization (`u_prng.go`, `u_roller.go`)**:
+  - Added `randMutex sync.Mutex` to `prng` protecting `Intn`, `Int63n`, `Perm`, and `Roller.Dial`'s `Shuffle`.
+* **Socket Cleanup on `Roller.Dial` Failure (`u_roller.go`)**:
+  - Added `_ = client.Close()` when `client.Handshake()` fails in `Roller.Dial` and copied `client.ClientHelloID` by value into `c.WorkingHelloID`.
+* **QUIC / UQUIC Session Cache & Transport Parameter Guards (`u_quic.go`, `quic.go`, `u_tls_extensions.go`)**:
+  - Guarded `SendSessionTicket` and `StoreSession` against `SessionTicketsDisabled` and nil `ClientSessionCache`, and propagated `q.conn.quic.transportParams` into `QUICTransportParametersExtension.marshalResult` when `TransportParameters` is empty.
+* **Hot-Path Allocation Reductions & Nil Guards (`u_conn.go`, `jls.go`, `tls.go`)**:
+  - Reused a single dynamically sized `scratch` slice across `UConn.extensionsList()`, guarded `c.conn.Close()` against nil in `UConn.handshakeContext`, propagated `computeAndUpdateOuterECHExtension` errors in `MarshalClientHello`, reused a single `sha256` hash with stack `[32]byte` buffers in `jls.go`, and converted `timeoutError` methods to pointer receivers `(*timeoutError)` in `tls.go`.
 
 ---
 
 ## 4. File Modification & Addition Matrix
 
-| File Path | Status | Change Type | Description of Delta Relative to Upstream Baseline |
+| File Path | Status | Change Category | Description of Delta Relative to Upstream Baseline (`a6a364af`) |
 | :--- | :--- | :--- | :--- |
-| `u_opera136.go` | **Added** | **Type 1** (New Feature) | Opera 136 ClientHello preset definition and extension builder. |
-| `u_opera136_test.go` | **Added** | Testing | Unit tests verifying Opera 136 wire format and ML-DSA trust anchors. |
-| `u_chrome155.go` | **Added** | **Type 1** (New Feature) | Chrome 155 ClientHello preset definition and extension builder. |
-| `u_chrome155_test.go` | **Added** | Testing | Unit tests verifying Chrome 155 captured wire format and ML-DSA compatibility. |
-| `u_firefox157_test.go`| **Added** | Testing | Unit tests verifying Firefox 157 ClientHello against captured wire traffic. |
-| `u_parrots.go` | **Modified** | **Type 1** (New Feature) | Hybrid post-quantum curve presets (`SecP256r1MLKEM768`, `SecP384r1MLKEM1024`, `X25519MLKEM768`), preset registry additions. |
-| `key_schedule.go` | **Modified** | **Type 1** (New Feature) | Multi-hybrid `CurveID` routing in `hybridKeyExchange.clientSharedSecret`. |
-| `mldsa.go` | **Added** | **Type 1** (New Feature) | ML-DSA algorithm constants and SPKI public key recovery interfaces. |
-| `mldsa_circl.go` | **Added** | **Type 1** (New Feature) | CIRCL-based ML-DSA signature verification and public key unmarshaling. |
-| `mldsa_test.go` | **Added** | Testing | Unit tests for ML-DSA-44, ML-DSA-65, and ML-DSA-87 signature verification and SPKI recovery. |
-| `reality.go` | **Modified** | **Type 1** & **Type 2** | Type 1: Embedded REALITY engine, wildcard SNI, `realityMldsa65KeyCache`, safe `CloseWrite`, user-tunable `HandshakeTimeout` and `FallbackReadDeadline` fields on `RealityConfig`.<br>Type 2: Deep config cloning (`concurrent map read and write` fix), `done` channel listener panic elimination, unaliased `handshakeBuf`, stack arrays, zero-alloc SHA-256 key cache lookup, fallback read deadline teardown preventing stalled socket/goroutine leaks, `context.AfterFunc` cancellation watchdog, active handshake deadline enforcement (`realityDefaultHandshakeTimeout` and `realityFallbackReadDeadline`) preventing stalled goroutines, zero-alloc ML-KEM-768 server share assembly, `realityServerBufPool` 16KB and `realityS2CBufPool` 4KB scratch buffer pooling, caller `ctx` propagation in `RealityServer`, named protocol constants eliminating magic numbers in comparisons and slice bounds (`realityIndexNewSessionTicket`, `realityIndexServerHello`, `realityX25519KeyLen`, `realityClientVerLen`, `realityShortIDLen`, `realityProbeBufLen`, `realityRecordVerStart`/`realityRecordVerEnd`, `realityRecordLenStart`/`realityRecordLenEnd`). |
-| `patch_reality_server.go` | **Added** | **Type 1** & **Type 2** | Type 1: Lazy initialization of REALITY ML-DSA-65 synthesized server certificate (`realityServerCertMldsa65`).<br>Type 2: Named constants `realityMldsa65CertPaddingLen` and `ed25519.PublicKeySize` eliminating magic literals. |
-| `reality_test.go` | **Added** | Testing | Unit tests for REALITY value decoding, ML-DSA certificate sizing, and signature generation. |
-| `u_prng.go` | **Modified** | **Type 2** (Bugfix) | Thread-safe `randMutex` protecting `math/rand.Rand` across all random generation methods. |
-| `u_roller.go` | **Modified** | **Type 2** (Bugfix) | Closed leaked `tcpConn` on handshake failure in `Roller.Dial`, and defined named constants `RollerMinTcpDialTimeoutSecs`, `RollerRandomTcpDialTimeoutSpanSecs`, `RollerMinTlsHandshakeTimeoutSecs`, and `RollerRandomTlsHandshakeSpanSecs` eliminating magic literals. |
-| `u_quic.go` | **Modified** | **Type 2** (Bugfix) | Transport parameter propagation across preset ClientHello generation, session cache guards. |
-| `quic.go` | **Modified** | **Type 2** (Bugfix) | Nil `ClientSessionCache` and `SessionTicketsDisabled` guards in `StoreSession`. |
-| `u_conn.go` | **Modified** | **Type 2** (Perf/Bugfix) | Reusable `scratch` buffer in `extensionsList()`, outer ECH error propagation in `MarshalClientHello`, defensive nil check in `handshakeContext` `contextAfterFunc` callback preventing panic when `UConn` or embedded `Conn` is nil. |
-| `tls.go` | **Modified** | **Type 2** (Code Quality) | Converted `timeoutError` receiver methods to `*timeoutError` pointer receivers, resolving interface ambiguity. |
-| `jls.go` | **Modified** | **Type 2** (Perf) | Reused `sha256` hash instance, `io.WriteString` string-to-byte avoidance, stack `[32]byte` arrays for nonce/key/plaintext. |
-| `handshake_test.go` | **Modified** | **Type 2** (Bugfix) | Scoped error variable in client handshake goroutine to eliminate data race with server handshake. |
+| `u_chrome155.go` / `u_chrome155_test.go` | **Added** | **Features & Testing** | Chrome 155 Trust Anchor IDs and captured wire-format / ML-DSA tests. |
+| `u_opera136.go` / `u_opera136_test.go` | **Added** | **Features & Testing** | Opera 136 Trust Anchor IDs and captured wire-format tests. |
+| `u_firefox157_test.go` / `u_parrots_new_test.go` | **Added** | **Testing** | Unit tests for Firefox 157 and new browser fingerprint parrots. |
+| `u_trust_anchors.go` / `u_trust_anchors_test.go` | **Added** | **Features & Testing** | `TrustAnchorsExtension` (`0xca34`) implementation, bounds validation, and tests. |
+| `dicttls/exttype_values.go` | **Modified** | **Features** | Registered `ExtType_trust_anchors` (`0xca34`). |
+| `u_common.go` / `u_parrots.go` | **Modified** | **Features & Perf** | New browser presets (Chrome 155, Edge 155, Firefox 157, Opera 136/89–91, Brave 146, iOS 26.3, Android 14/15, 360 122, QQ 123), hybrid PQ curves (`SecP256r1MLKEM768`, `SecP384r1MLKEM1024`), stack GREASE seed buffer, and per-curve key map population. |
+| `mldsa.go` / `mldsa_circl.go` / `mldsa_test.go` | **Added** | **Features & Testing** | CIRCL-based `ML-DSA-44/65/87` signature verification, SPKI public key recovery, and tests. |
+| `auth.go` / `cache.go` / `common.go` / `handshake_client_tls13.go` | **Modified** | **Features** | Wired `signatureMLDSA` and `parseCertificate` into TLS 1.3 certificate verification. |
+| `key_schedule.go` / `u_public.go` | **Modified** | **Features** | Per-curve `keys` and `mlkemKeys` maps on `keySharePrivateKeys` / `KeySharePrivateKeys`. |
+| `reality.go` / `patch_reality_server.go` / `reality_test.go` | **Modified / Added** | **Features, Memory & Concurrency** | Wildcard SNI, `realityMldsa65KeyCache`, deep `RealityConfig.Clone()`, `realityListener` shutdown safety, `realityServerBufPool` and capacity-preserving `realityS2CBufPool` (16 KiB), `releaseHandshakeBuffers` freeing `c.hand`/`c.rawInput`, stack `[32]byte` buffers, handshake/fallback deadlines, and unit tests. |
+| `u_conn.go` | **Modified** | **Memory & Bugfix** | `releaseHandshakeBuffers(false)` on handshake completion and `c.hand` reclamation in `Read`, reusable `scratch` buffer in `extensionsList()`, ECH error propagation, and nil `c.conn` guard in `handshakeContext`. |
+| `u_handshake_client.go` | **Modified** | **Security / Bugfix** | `io.ReadFull`, excess decompressed byte check, and trailing compressed data check in `decompressCert`. |
+| `ech.go` / `ech_test.go` | **Modified** | **Bugfix & Perf** | RFC 9460 unknown-version ECH config skip fix, zero-copy `parseECHExt`, single-allocation `decryptECHPayload`. |
+| `u_prng.go` / `u_roller.go` | **Modified** | **Concurrency & Leak Fix** | `randMutex` protecting `math/rand.Rand`, `_ = client.Close()` on failed handshake in `Roller.Dial`, value-copied `WorkingHelloID`, and named timeout constants. |
+| `u_quic.go` / `quic.go` / `u_tls_extensions.go` | **Modified** | **Bugfix** | Nil `ClientSessionCache` and `SessionTicketsDisabled` guards, QUIC transport parameter propagation, and GREASE seed bounds check. |
+| `jls.go` / `tls.go` / `handshake_test.go` | **Modified** | **Perf & Quality** | Stack buffers and hash reuse in `jls.go`, pointer receiver on `timeoutError` in `tls.go`, and race fix in `handshake_test.go`. |

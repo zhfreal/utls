@@ -9,6 +9,15 @@ import (
 	"golang.org/x/crypto/cryptobyte"
 )
 
+const (
+	trustAnchorsHeaderLen       = 4 // 2 bytes extension type + 2 bytes extension length
+	trustAnchorsListLenBytes    = 2 // 2 bytes list length prefix
+	trustAnchorsTotalHeaderLen  = trustAnchorsHeaderLen + trustAnchorsListLenBytes // 6 bytes
+	trustAnchorIDMinLen         = 1
+	trustAnchorIDMaxLen         = 255
+	trustAnchorsMaxExtensionLen = 65535
+)
+
 // TrustAnchorsExtension implements the draft trust_anchors ClientHello extension
 // (0xca34). Each TrustAnchorID contains 1 to 255 bytes; an empty list is valid.
 // The IDs are advertised to the server and do not change Config.RootCAs.
@@ -21,7 +30,7 @@ func (e *TrustAnchorsExtension) writeToUConn(_ *UConn) error {
 }
 
 func (e *TrustAnchorsExtension) Len() int {
-	n := 6 // Extension header and RequestedTrustAnchorList length.
+	n := trustAnchorsTotalHeaderLen
 	for _, id := range e.TrustAnchorIDs {
 		n += 1 + len(id)
 	}
@@ -31,13 +40,13 @@ func (e *TrustAnchorsExtension) Len() int {
 func (e *TrustAnchorsExtension) validate() error {
 	listLen := 0
 	for _, id := range e.TrustAnchorIDs {
-		if len(id) == 0 || len(id) > 255 {
-			return fmt.Errorf("tls: trust anchor ID length %d is outside 1..255", len(id))
+		if len(id) < trustAnchorIDMinLen || len(id) > trustAnchorIDMaxLen {
+			return fmt.Errorf("tls: trust anchor ID length %d is outside %d..%d", len(id), trustAnchorIDMinLen, trustAnchorIDMaxLen)
 		}
 		listLen += 1 + len(id)
 		// The extension_data length also includes the two-byte list length.
-		if listLen > (1<<16)-3 {
-			return errors.New("tls: trust anchors extension data exceeds 65535 bytes")
+		if listLen > trustAnchorsMaxExtensionLen-trustAnchorsListLenBytes {
+			return fmt.Errorf("tls: trust anchors extension data exceeds %d bytes", trustAnchorsMaxExtensionLen)
 		}
 	}
 	return nil
@@ -50,14 +59,15 @@ func (e *TrustAnchorsExtension) Read(b []byte) (int, error) {
 	if len(b) < e.Len() {
 		return 0, io.ErrShortBuffer
 	}
-	listLen := e.Len() - 6
+	listLen := e.Len() - trustAnchorsTotalHeaderLen
+	extDataLen := trustAnchorsListLenBytes + listLen
 	b[0] = byte(utlsExtensionTrustAnchors >> 8)
 	b[1] = byte(utlsExtensionTrustAnchors & 0xff)
-	b[2] = byte((2 + listLen) >> 8)
-	b[3] = byte(2 + listLen)
+	b[2] = byte(extDataLen >> 8)
+	b[3] = byte(extDataLen)
 	b[4] = byte(listLen >> 8)
 	b[5] = byte(listLen)
-	offset := 6
+	offset := trustAnchorsTotalHeaderLen
 	for _, id := range e.TrustAnchorIDs {
 		b[offset] = byte(len(id))
 		offset++
@@ -67,8 +77,8 @@ func (e *TrustAnchorsExtension) Read(b []byte) (int, error) {
 }
 
 func (e *TrustAnchorsExtension) Write(b []byte) (int, error) {
-	if len(b) > (1<<16)-1 {
-		return 0, errors.New("tls: trust anchors extension data exceeds 65535 bytes")
+	if len(b) > trustAnchorsMaxExtensionLen {
+		return 0, fmt.Errorf("tls: trust anchors extension data exceeds %d bytes", trustAnchorsMaxExtensionLen)
 	}
 	extData := cryptobyte.String(b)
 	var list cryptobyte.String

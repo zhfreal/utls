@@ -3,6 +3,7 @@
 package tls
 
 import (
+	"bytes"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -73,6 +74,12 @@ func (c *realityMirrorConn) SetWriteDeadline(t time.Time) error {
 }
 
 const (
+	DefaultRealityHandshakeTimeout     = 10 * time.Second
+	DefaultRealityFallbackReadDeadline = 5 * time.Second
+
+	realityDefaultHandshakeTimeout     = DefaultRealityHandshakeTimeout
+	realityFallbackReadDeadline        = DefaultRealityFallbackReadDeadline
+
 	realitySize uint16 = 16384
 
 	realityIndexServerHello            = 0
@@ -94,16 +101,15 @@ const (
 	realityClientShortIDOffset         = 8
 	realityX25519KeyLen                = 32
 	realityMldsa65CertSignatureOffset  = 126
-	realityDefaultHandshakeTimeout     = 10 * time.Second
-	realityFallbackReadDeadline        = 5 * time.Second
 
-	realityClientVerLen   = 3
-	realityShortIDLen     = 8
-	realityProbeBufLen    = 1
-	realityRecordVerStart = 1
-	realityRecordVerEnd   = 3
-	realityRecordLenStart = 3
-	realityRecordLenEnd   = 5
+	realityClientVerLen            = 3
+	realityShortIDLen              = 8
+	realityProbeBufLen             = 1
+	realityRecordVerStart          = 1
+	realityRecordVerEnd            = 3
+	realityRecordLenStart          = 3
+	realityRecordLenEnd            = 5
+	realityRecordPayloadTypeOffset = 5
 )
 
 var realityServerBufPool = sync.Pool{
@@ -115,9 +121,21 @@ var realityServerBufPool = sync.Pool{
 
 var realityS2CBufPool = sync.Pool{
 	New: func() any {
-		b := make([]byte, 0, realityInitialS2CBufCap)
+		b := make([]byte, 0, realitySize)
 		return &b
 	},
+}
+
+func (c *Conn) releaseHandshakeBuffers(force bool) {
+	if force || c.hand.Len() == 0 {
+		c.hand = bytes.Buffer{}
+	}
+	if force || (c.input.Len() == 0 && c.rawInput.Len() == 0) {
+		c.rawInput = bytes.Buffer{}
+	}
+	if force {
+		c.out.handshakeBuf = nil
+	}
 }
 
 var realityTypes = [7]string{
@@ -132,7 +150,7 @@ var realityTypes = [7]string{
 
 func realityValue(vals ...byte) (value int) {
 	for i := 0; i < len(vals) && i < realityClientVerLen; i++ {
-		value |= int(vals[i]) << ((2 - i) * 8)
+		value |= int(vals[i]) << ((realityClientVerLen - 1 - i) * 8)
 	}
 	return
 }
@@ -544,6 +562,13 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 	waitGroup.Add(2)
 
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				_ = conn.Close()
+				_ = target.Close()
+			}
+			waitGroup.Done()
+		}()
 		switch {
 		default:
 			mutex.Lock()
@@ -607,6 +632,9 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 				config.Log("REALITY remoteAddr: %v hs.c.conn == conn: %v", remoteAddr, hs.c.conn == conn)
 			}
 		}
+		if hs.c.conn != conn {
+			hs.c.releaseHandshakeBuffers(true)
+		}
 		mutex.Unlock()
 		if hs.c.conn != conn {
 			_ = underlying.SetDeadline(time.Time{})
@@ -624,18 +652,24 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 				_ = target.Close()
 			}
 		}
-		waitGroup.Done()
 	}()
 
 	go func() {
-		s2cBufPtr := realityS2CBufPool.Get().(*[]byte)
-		s2cSaved := (*s2cBufPtr)[:0]
 		defer func() {
-			if cap(s2cSaved) <= int(realitySize) {
-				s2cSaved = s2cSaved[:0]
-				realityS2CBufPool.Put(&s2cSaved)
+			if r := recover(); r != nil {
+				_ = conn.Close()
+				_ = target.Close()
+			}
+			waitGroup.Done()
+		}()
+		s2cBufPtr := realityS2CBufPool.Get().(*[]byte)
+		defer func() {
+			if cap(*s2cBufPtr) >= int(realitySize) {
+				*s2cBufPtr = (*s2cBufPtr)[:0]
+				realityS2CBufPool.Put(s2cBufPtr)
 			}
 		}()
+		s2cSaved := (*s2cBufPtr)[:0]
 		bufPtr := realityServerBufPool.Get().(*[]byte)
 		defer realityServerBufPool.Put(bufPtr)
 		buf := *bufPtr
@@ -647,7 +681,6 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 			if n == 0 {
 				if err != nil {
 					conn.Close()
-					waitGroup.Done()
 					return
 				}
 				continue
@@ -671,11 +704,11 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 				if handshakeLen == 0 && len(s2cSaved) > recordHeaderLen {
 					recVer := int(binary.BigEndian.Uint16(s2cSaved[realityRecordVerStart:realityRecordVerEnd]))
 					if recVer != VersionTLS12 ||
-						(i == realityIndexServerHello && (recordType(s2cSaved[0]) != recordTypeHandshake || s2cSaved[5] != typeServerHello)) ||
-						(i == realityIndexChangeCipherSpec && (recordType(s2cSaved[0]) != recordTypeChangeCipherSpec || s2cSaved[5] != realityChangeCipherSpecPayloadByte)) ||
+						(i == realityIndexServerHello && (recordType(s2cSaved[0]) != recordTypeHandshake || s2cSaved[realityRecordPayloadTypeOffset] != typeServerHello)) ||
+						(i == realityIndexChangeCipherSpec && (recordType(s2cSaved[0]) != recordTypeChangeCipherSpec || s2cSaved[realityRecordPayloadTypeOffset] != realityChangeCipherSpecPayloadByte)) ||
 						(i > realityIndexChangeCipherSpec && recordType(s2cSaved[0]) != recordTypeApplicationData) {
 						if config.Log != nil {
-							config.Log("REALITY remoteAddr: %v record %d mismatch: recVer=0x%04x, recType=%x, firstByte=%x", remoteAddr, i, recVer, s2cSaved[0], s2cSaved[5])
+							config.Log("REALITY remoteAddr: %v record %d mismatch: recVer=0x%04x, recType=%x, firstByte=%x", remoteAddr, i, recVer, s2cSaved[0], s2cSaved[realityRecordPayloadTypeOffset])
 						}
 						break f
 					}
@@ -769,14 +802,21 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 					}
 				}()
 			}
-			_, _ = conn.Write(s2cSaved)
-			_, _ = io.Copy(underlying, newRateLimitedConn(target, &config.LimitFallbackDownload))
-			if cw, ok := underlying.(realityCloseWriteConn); ok {
-				_ = cw.CloseWrite()
+			if _, wErr := conn.Write(s2cSaved); wErr != nil {
+				_ = conn.Close()
+				_ = target.Close()
+				return
 			}
-			_ = underlying.SetReadDeadline(time.Now().Add(fallbackReadDeadline))
+			_, copyErr := io.Copy(underlying, newRateLimitedConn(target, &config.LimitFallbackDownload))
+			if copyErr == nil {
+				if cw, ok := underlying.(realityCloseWriteConn); ok {
+					_ = cw.CloseWrite()
+				}
+				_ = underlying.SetReadDeadline(time.Now().Add(fallbackReadDeadline))
+			} else {
+				_ = underlying.Close()
+			}
 		}
-		waitGroup.Done()
 	}()
 
 	waitGroup.Wait()
@@ -785,9 +825,11 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 		config.Log("REALITY remoteAddr: %v hs.c.isHandshakeComplete.Load(): %v", remoteAddr, hs.c.isHandshakeComplete.Load())
 	}
 	if hs.c.isHandshakeComplete.Load() {
+		hs.c.releaseHandshakeBuffers(false)
 		_ = conn.SetDeadline(time.Time{})
 		return hs.c, nil
 	}
+	hs.c.releaseHandshakeBuffers(true)
 	conn.Close()
 	return nil, errors.New("REALITY: processed invalid connection") // TODO: Add details.
 

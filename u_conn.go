@@ -387,6 +387,10 @@ func (c *UConn) handshakeContext(ctx context.Context) (ret error) {
 		panic("tls: internal error: handshake returned an error but is marked successful")
 	}
 
+	if c.handshakeErr == nil {
+		c.releaseHandshakeBuffers(false)
+	}
+
 	if c.quic != nil {
 		if c.handshakeErr == nil {
 			c.quicHandshakeComplete()
@@ -484,13 +488,15 @@ func (uconn *UConn) ApplyConfig() error {
 	return nil
 }
 
+const tlsExtensionHeaderLen = 4
+
 func (uconn *UConn) extensionsList() []uint16 {
 	outerExts := make([]uint16, 0, len(uconn.Extensions))
 	var scratch []byte
 	for _, ext := range uconn.Extensions {
 		extLen := ext.Len()
-		if extLen < 4 {
-			extLen = 4
+		if extLen < tlsExtensionHeaderLen {
+			extLen = tlsExtensionHeaderLen
 		}
 		if cap(scratch) < extLen {
 			scratch = make([]byte, extLen)
@@ -884,6 +890,9 @@ func (c *UConn) Read(b []byte) (int, error) {
 			if err := c.handlePostHandshakeMessage(); err != nil {
 				return 0, err
 			}
+		}
+		if c.hand.Len() == 0 {
+			c.hand = bytes.Buffer{}
 		}
 	}
 

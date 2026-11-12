@@ -72,3 +72,38 @@ func TestRealityFallbackReadDeadlineConstant(t *testing.T) {
 		t.Fatalf("expected positive realityFallbackReadDeadline, got %v", realityFallbackReadDeadline)
 	}
 }
+
+func TestRealityS2CBufPoolPreservesCapacity(t *testing.T) {
+	bufPtr := realityS2CBufPool.Get().(*[]byte)
+	if cap(*bufPtr) < int(realitySize) {
+		t.Fatalf("expected initial capacity >= %d, got %d", realitySize, cap(*bufPtr))
+	}
+	s2cSaved := (*bufPtr)[:0]
+	s2cSaved = append(s2cSaved, make([]byte, 2048)...)
+	s2cSaved = s2cSaved[1200:]
+	s2cSaved = s2cSaved[848:]
+	realityS2CBufPool.Put(bufPtr)
+
+	bufPtr2 := realityS2CBufPool.Get().(*[]byte)
+	defer realityS2CBufPool.Put(bufPtr2)
+	if cap(*bufPtr2) < int(realitySize) {
+		t.Fatalf("pooled buffer lost capacity after reslicing: got %d, want >= %d", cap(*bufPtr2), realitySize)
+	}
+}
+
+func TestRealityReleaseHandshakeBuffers(t *testing.T) {
+	c := &Conn{}
+	c.hand.Write(make([]byte, 4096))
+	c.rawInput.Write(make([]byte, 4096))
+	c.out.handshakeBuf = make([]byte, 1024)
+
+	c.releaseHandshakeBuffers(false)
+	if c.hand.Cap() == 0 || c.rawInput.Cap() == 0 {
+		t.Fatal("expected non-empty buffers to be retained when force=false")
+	}
+
+	c.releaseHandshakeBuffers(true)
+	if c.hand.Cap() != 0 || c.rawInput.Cap() != 0 || c.out.handshakeBuf != nil {
+		t.Fatal("expected all handshake buffers to be freed when force=true")
+	}
+}
