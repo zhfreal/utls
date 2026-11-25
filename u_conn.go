@@ -389,6 +389,8 @@ func (c *UConn) handshakeContext(ctx context.Context) (ret error) {
 
 	if c.handshakeErr == nil {
 		c.releaseHandshakeBuffers(false)
+	} else {
+		c.releaseHandshakeBuffers(true)
 	}
 
 	if c.quic != nil {
@@ -502,11 +504,15 @@ func (uconn *UConn) extensionsList() []uint16 {
 			scratch = make([]byte, extLen)
 		}
 		buf := scratch[:extLen]
-		ext.Read(buf)
-		buffer := cryptobyte.String(buf)
-		var extension uint16
-		buffer.ReadUint16(&extension)
-		outerExts = append(outerExts, extension)
+		clear(buf[:tlsExtensionHeaderLen])
+		n, _ := ext.Read(buf)
+		if n >= 2 {
+			buffer := cryptobyte.String(buf[:n])
+			var extension uint16
+			if buffer.ReadUint16(&extension) {
+				outerExts = append(outerExts, extension)
+			}
+		}
 	}
 	return outerExts
 }

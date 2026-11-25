@@ -56,10 +56,11 @@ func (e *TrustAnchorsExtension) Read(b []byte) (int, error) {
 	if err := e.validate(); err != nil {
 		return 0, err
 	}
-	if len(b) < e.Len() {
+	totalLen := e.Len()
+	if len(b) < totalLen {
 		return 0, io.ErrShortBuffer
 	}
-	listLen := e.Len() - trustAnchorsTotalHeaderLen
+	listLen := totalLen - trustAnchorsTotalHeaderLen
 	extDataLen := trustAnchorsListLenBytes + listLen
 	b[0] = byte(utlsExtensionTrustAnchors >> 8)
 	b[1] = byte(utlsExtensionTrustAnchors & 0xff)

@@ -162,15 +162,19 @@ func jlsBuildFakeRandom(user JLSUser, random16, authData []byte, random io.Reade
 	seed := append([]byte(nil), random16...)
 	// JLS v3 reserves the TLS downgrade canaries and the HRR random suffix.
 	// Regenerate N instead of emitting a FakeRandom ending in one of them.
-	for {
+	for attempts := 0; attempts < 64; attempts++ {
 		fakeRandom := aead.Seal(nil, nonce[:], seed, nil)
 		if !jlsHasForbiddenRandomSuffix(fakeRandom) {
 			return fakeRandom, nil
+		}
+		if random == nil {
+			return nil, errors.New("tls: jls random reader is nil")
 		}
 		if _, err := io.ReadFull(random, seed); err != nil {
 			return nil, err
 		}
 	}
+	return nil, errors.New("tls: jls failed to generate non-forbidden random")
 }
 
 func jlsHasForbiddenRandomSuffix(random []byte) bool {
@@ -424,9 +428,7 @@ func jlsPatchClientHelloBinders(hello *clientHelloMsg) error {
 }
 
 func jlsZero(b []byte) {
-	for i := range b {
-		b[i] = 0
-	}
+	clear(b)
 }
 
 func (cfg *JLSConfig) checkServerName(serverName string) bool {

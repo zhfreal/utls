@@ -144,8 +144,11 @@ func (p *prng) Seed(_ int64) {
 //
 // Input weights > 1.0 are treated as 1.0.
 func (p *prng) FlipWeightedCoin(weight float64) bool {
-	if weight > 1.0 {
-		weight = 1.0
+	if math.IsNaN(weight) || weight <= 0.0 {
+		return false
+	}
+	if weight >= 1.0 {
+		return true
 	}
 	f := float64(p.Int63()) / float64(math.MaxInt64)
 	return f > 1.0-weight
@@ -189,7 +192,11 @@ func (p *prng) Range(min, max int) int {
 	if max < min {
 		return min
 	}
-	n := p.Intn(max - min + 1)
+	span := uint64(max) - uint64(min)
+	if span >= uint64(math.MaxInt) {
+		return min + p.Intn(math.MaxInt)
+	}
+	n := p.Intn(int(span) + 1)
 	n += min
 	return n
 }

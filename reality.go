@@ -188,6 +188,9 @@ type RealityConfig struct {
 }
 
 func (a *RealityConfig) Clone() *RealityConfig {
+	if a == nil {
+		return nil
+	}
 	a.Config.mutex.RLock()
 	defer a.Config.mutex.RUnlock()
 	var serverNames map[string]bool
@@ -245,7 +248,7 @@ func (c *rateLimitedConn) Read(b []byte) (int, error) {
 }
 
 func newRateLimitedConn(conn net.Conn, limit *RealityLimitFallback) net.Conn {
-	if limit.BytesPerSec == 0 {
+	if limit == nil || limit.BytesPerSec == 0 {
 		return conn
 	}
 
@@ -326,6 +329,9 @@ func (hs *realityServerHandshakeStateTLS13) handshake() error {
 		}
 
 		hs.suite = cipherSuiteTLS13ByID(hs.hello.cipherSuite)
+		if hs.suite == nil {
+			return errors.New("tls: unsupported cipher suite in server hello")
+		}
 		c.cipherSuite = hs.suite.id
 		hs.transcript = hs.suite.hash.New()
 
@@ -489,6 +495,12 @@ type realityCloseWriteConn interface {
 }
 
 func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*Conn, error) {
+	if conn == nil || config == nil || config.DialContext == nil {
+		if conn != nil {
+			_ = conn.Close()
+		}
+		return nil, errors.New("REALITY: invalid nil conn, config, or DialContext")
+	}
 	var remoteAddr string
 	if conn.RemoteAddr() != nil {
 		remoteAddr = conn.RemoteAddr().String()
@@ -599,8 +611,16 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 				if _, err = hkdf.New(sha256.New, hs.AuthKey, hs.clientHello.random[:realityAuthKeyHKDFSaltLen], []byte("REALITY")).Read(hs.AuthKey); err != nil {
 					break
 				}
-				block, _ := aes.NewCipher(hs.AuthKey)
-				aead, _ := cipher.NewGCM(block)
+				block, cipherErr := aes.NewCipher(hs.AuthKey)
+				if cipherErr != nil {
+					err = cipherErr
+					break
+				}
+				aead, gcmErr := cipher.NewGCM(block)
+				if gcmErr != nil {
+					err = gcmErr
+					break
+				}
 				if config.Log != nil {
 					config.Log("REALITY remoteAddr: %v hs.c.AuthKey[:16]: %v AEAD: %T", remoteAddr, hs.AuthKey[:16], aead)
 				}

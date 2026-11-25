@@ -1,6 +1,7 @@
 package tls
 
 import (
+	"errors"
 	"net"
 	"sync"
 	"time"
@@ -60,11 +61,13 @@ func (c *Roller) Dial(network, addr, serverName string) (*UConn, error) {
 	c.HelloIDMu.Lock()
 	helloIDs := make([]ClientHelloID, len(c.HelloIDs))
 	copy(helloIDs, c.HelloIDs)
-	c.r.randMutex.Lock()
-	c.r.rand.Shuffle(len(helloIDs), func(i, j int) {
-		helloIDs[i], helloIDs[j] = helloIDs[j], helloIDs[i]
-	})
-	c.r.randMutex.Unlock()
+	if c.r != nil {
+		c.r.randMutex.Lock()
+		c.r.rand.Shuffle(len(helloIDs), func(i, j int) {
+			helloIDs[i], helloIDs[j] = helloIDs[j], helloIDs[i]
+		})
+		c.r.randMutex.Unlock()
+	}
 	workingHelloId := c.WorkingHelloID // keep using same helloID, if it works
 	c.HelloIDMu.Unlock()
 	if workingHelloId != nil {
@@ -92,9 +95,13 @@ func (c *Roller) Dial(network, addr, serverName string) (*UConn, error) {
 
 		client := UClient(tcpConn, nil, helloID)
 		client.SetSNI(serverName)
-		client.SetDeadline(time.Now().Add(c.TlsHandshakeTimeout))
+		if c.TlsHandshakeTimeout > 0 {
+			client.SetDeadline(time.Now().Add(c.TlsHandshakeTimeout))
+		}
 		err = client.Handshake()
-		client.SetDeadline(time.Time{}) // unset timeout
+		if c.TlsHandshakeTimeout > 0 {
+			client.SetDeadline(time.Time{}) // unset timeout
+		}
 		if err != nil {
 			_ = client.Close()
 			continue // on tls Dial error keep trying HelloIDs
@@ -105,6 +112,9 @@ func (c *Roller) Dial(network, addr, serverName string) (*UConn, error) {
 		c.WorkingHelloID = &workingID
 		c.HelloIDMu.Unlock()
 		return client, err
+	}
+	if err == nil {
+		return nil, errors.New("tls: no HelloIDs configured in Roller")
 	}
 	return nil, err
 }

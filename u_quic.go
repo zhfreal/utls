@@ -99,7 +99,7 @@ func (q *UQUICConn) NextEvent() QUICEvent {
 
 // Close closes the connection and stops any in-progress handshake.
 func (q *UQUICConn) Close() error {
-	if q.conn.quic.ctx == nil {
+	if q == nil || q.conn == nil || q.conn.quic == nil || q.conn.quic.ctx == nil {
 		return nil // never started
 	}
 	q.conn.quic.cancel()
@@ -107,6 +107,8 @@ func (q *UQUICConn) Close() error {
 	for range q.conn.quic.blockedc {
 		// Wait for the handshake goroutine to return.
 	}
+	q.conn.quic.events = nil
+	q.conn.quic.readbuf = nil
 	return q.conn.handshakeErr
 }
 
