@@ -67,6 +67,10 @@ func (hs *clientHandshakeStateTLS13) decompressCert(m utlsCompressedCertificateM
 		c.sendAlert(alertBadCertificate)
 		return nil, fmt.Errorf("unadvertised algorithm (%d)", m.algorithm)
 	}
+	if m.uncompressedLength == 0 || m.uncompressedLength > maxHandshakeCertificateMsg {
+		c.sendAlert(alertBadCertificate)
+		return nil, fmt.Errorf("invalid uncompressed certificate length (%d)", m.uncompressedLength)
+	}
 
 	switch CertCompressionAlgo(m.algorithm) {
 	case CertCompressionBrotli:
@@ -82,7 +86,12 @@ func (hs *clientHandshakeStateTLS13) decompressCert(m utlsCompressedCertificateM
 		decompressed = rc
 
 	case CertCompressionZstd:
-		rc, err := zstd.NewReader(compressed)
+		rc, err := zstd.NewReader(
+			compressed,
+			zstd.WithDecoderConcurrency(1),
+			zstd.WithDecoderMaxWindow(1<<19),
+			zstd.WithDecoderMaxMemory(uint64(maxHandshakeCertificateMsg)+64*1024),
+		)
 		if err != nil {
 			c.sendAlert(alertBadCertificate)
 			return nil, fmt.Errorf("failed to open zstd reader: %w", err)
@@ -95,6 +104,7 @@ func (hs *clientHandshakeStateTLS13) decompressCert(m utlsCompressedCertificateM
 		return nil, fmt.Errorf("unsupported algorithm (%d)", m.algorithm)
 	}
 
+	decompressed = io.LimitReader(decompressed, int64(m.uncompressedLength)+1)
 	rawMsg := make([]byte, m.uncompressedLength+4) // +4 for message type and uint24 length field
 	rawMsg[0] = typeCertificate
 	rawMsg[1] = uint8(m.uncompressedLength >> 16)

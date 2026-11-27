@@ -552,6 +552,13 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 	underlying := conn
 
 	mutex := new(sync.Mutex)
+	var clearFallbackDeadlinesOnce sync.Once
+	clearFallbackDeadlines := func() {
+		clearFallbackDeadlinesOnce.Do(func() {
+			_ = underlying.SetDeadline(time.Time{})
+			_ = target.SetDeadline(time.Time{})
+		})
+	}
 
 	hs := realityServerHandshakeStateTLS13{
 		serverHandshakeStateTLS13: serverHandshakeStateTLS13{
@@ -657,8 +664,7 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 		}
 		mutex.Unlock()
 		if hs.c.conn != conn {
-			_ = underlying.SetDeadline(time.Time{})
-			_ = target.SetDeadline(time.Time{})
+			clearFallbackDeadlines()
 			if config.Log != nil && hs.clientHello != nil {
 				config.Log("REALITY remoteAddr: %v forwarded SNI: %v", remoteAddr, hs.clientHello.serverName)
 			}
@@ -805,8 +811,7 @@ func RealityServer(ctx context.Context, conn net.Conn, config *RealityConfig) (*
 		}
 		mutex.Unlock()
 		if hs.c.out.handshakeLen[realityIndexServerHello] == 0 { // if the target sent an incorrect Server Hello, or before that
-			_ = underlying.SetDeadline(time.Time{})
-			_ = target.SetDeadline(time.Time{})
+			clearFallbackDeadlines()
 			if hs.c.conn == conn { // if we processed the Client Hello successfully but the target did not
 				waitGroup.Add(1)
 				go func() {

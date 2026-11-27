@@ -67,7 +67,7 @@ func (q *UQUICConn) ApplyPreset(p *ClientHelloSpec) error {
 // It returns an event with a Kind of QUICNoEvent when no events are available.
 func (q *UQUICConn) NextEvent() QUICEvent {
 	qs := q.conn.quic
-	if last := qs.nextEvent - 1; last >= 0 && len(qs.events[last].Data) > 0 {
+	if last := qs.nextEvent - 1; last >= 0 && last < len(qs.events) && len(qs.events[last].Data) > 0 {
 		// Write over some of the previous event's data,
 		// to catch callers erroniously retaining it.
 		qs.events[last].Data[0] = 0
@@ -108,6 +108,8 @@ func (q *UQUICConn) Close() error {
 		// Wait for the handshake goroutine to return.
 	}
 	q.conn.quic.events = nil
+	q.conn.quic.nextEvent = 0
+	q.conn.quic.waitingForDrain = false
 	q.conn.quic.readbuf = nil
 	return q.conn.handshakeErr
 }
